@@ -1,0 +1,59 @@
+//created by zhang jian xin 2016 @IBM
+package com.ibm.cloud.im.model.response;
+
+import java.util.ArrayList;
+import java.util.List;
+
+import com.ibm.cloud.im.constant.IMConstants;
+import com.ibm.cloud.im.model.data.KVStore.MessageBody;
+
+public class OperateMsgsResponse {
+	String  eventName=IMConstants.lookupMsgRspEvt;
+	String topicId;
+	List <MsgRespondBody> msgs;
+	public void setEventName(String eventName) {
+		this.eventName = eventName;
+	}
+	public String getEventName() {
+		return eventName;
+	}
+	public String getTopicId() {
+		return topicId;
+	}
+	public void setTopicId(String topicId) {
+		this.topicId = topicId;
+	}
+	public List<MsgRespondBody> getMsgs() {
+		return msgs;
+	}
+	public void setMsgs(List<MsgRespondBody> msgs) {
+		this.msgs = msgs;
+	}
+	public void putkvStoreMsgs(List<MessageBody> msgs) {
+		for (MessageBody item : msgs)
+		{
+			MsgRespondBody body = new MsgRespondBody(item);
+			this.msgs.add(body);
+		}
+	}
+	public OperateMsgsResponse()
+	{
+		msgs= new ArrayList <MsgRespondBody>();
+	}
+	public void putDeleteMsg(String msgId)
+	{
+		msgs = new ArrayList<MsgRespondBody>();
+		MsgRespondBody msg = new MsgRespondBody();
+		msg.setId(msgId);
+		msgs.add(msg);		
+	}
+	public OperateMsgsResponse(List <MessageBody> list)
+	{
+		msgs = new ArrayList<MsgRespondBody>();
+		for (MessageBody elem: list)
+		{
+			MsgRespondBody msg = new MsgRespondBody(elem);
+			msgs.add(msg);
+		}
+	}
+}

@@ -1,0 +1,284 @@
+//created by zhang jian xin 2016 @IBM
+package com.ibm.cloud.im.server.service.business;
+
+import java.io.IOException;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+
+import net.sf.json.JSONObject;
+
+import org.apache.commons.logging.Log;
+import org.apache.commons.logging.LogFactory;
+import org.bson.types.ObjectId;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.stereotype.Service;
+
+import com.ibm.cloud.im.constant.IMConstants;
+import com.ibm.cloud.im.model.data.KVStore.TopicGroup;
+import com.ibm.cloud.im.model.data.KVStore.TopicGroupBase;
+import com.ibm.cloud.im.model.data.KVStoredao.TopicGroupDao;
+import com.ibm.cloud.im.model.rquest.TopicGroupRequest;
+import com.ibm.cloud.im.server.service.infrastructure.SessionMgr;
+
+import redis.clients.jedis.Jedis;
+
+
+//主题及用户群组管理模块服务代码
+@Service
+public class TopicAndGroupService {
+	private static Log logger = LogFactory.getLog(TopicAndGroupService.class);
+   
+    @Autowired
+    SessionMgr sessionMgr;
+    
+    @Autowired
+    private TopicGroupDao TopicGroupDao;
+        
+	//创建主题
+	public TopicGroup createTopicAndGroup(TopicGroupRequest request)
+	{
+		List <String> userList = request.getUserList();
+		Collections.sort(userList);
+		String operatorId = request.getOperatorId();
+		//把founder user id加入用户组， 去重， 排序
+		if (Collections.binarySearch(userList, request.getOperatorId())<0)
+		{
+			userList.add(request.getOperatorId());
+			Collections.sort(userList);
+		}
+		//创建主题数据结构
+    	TopicGroup newobj = TopicGroupDao.createTopic(request);
+    	syncTopicGroupCache(newobj);
+    	return newobj;
+	}
+	//为某个主题或群组， 增加新的用户, 增加订阅
+	//成功返回修改后的TopicGroup结构
+	//失败返回null
+	public TopicGroup addUsers(TopicGroupRequest req)
+	{
+		TopicGroup newobj =  TopicGroupDao.addUser(req) ;
+		if (newobj != null){
+			syncTopicGroupCache(newobj);
+		}
+		return newobj;
+	}
+	//为某个主题或群组， 删除用户， 取消订阅
+	//成功返回修改后的TopicGroup结构
+	//失败返回null
+	public TopicGroup removeUsers(TopicGroupRequest req)
+	{
+		TopicGroup newobj =  TopicGroupDao.removeUser(req) ;
+		if (newobj != null)
+		{
+			syncTopicGroupCache(newobj);
+		}
+		return newobj;		
+	}
+	public TopicGroup addRefTopicGroup(TopicGroupRequest req)
+	{
+		TopicGroup newobj =  TopicGroupDao.addRefTopicGroup(req) ;
+		if (newobj != null)
+		{
+			syncTopicGroupCache(newobj);
+		}
+		return newobj;
+	}
+	public TopicGroup removeRefTopicGroup(TopicGroupRequest req)
+	{
+		TopicGroup newobj =  TopicGroupDao.removeRefTopicGroup(req) ;
+		if (newobj != null)
+		{
+			syncTopicGroupCache(newobj);
+		}
+		return newobj;		
+	}	
+	//修改讨论组名字
+    public TopicGroup updateTopicName(TopicGroupRequest request)
+    {
+    	
+    	TopicGroup newobj = TopicGroupDao.updateTopicName(request.getTopicId(), request.getTopicName());
+    	syncTopicGroupCache(newobj);
+
+    	return newobj;
+    } 
+	//删除主题， 标记删除
+	public TopicGroup removeTopic(TopicGroupRequest request)
+	{
+		//在存储的主题对象标记删除属性
+        TopicGroup newobj = TopicGroupDao.removeTopic(request);
+        syncTopicGroupCache(newobj);
+	
+        return newobj;	
+	}
+	
+	//查询某个主题上的消息总数
+	public long queryTopicMsgCount(TopicGroupRequest request)
+	{
+		//TODO 用MessageBodyDao做mongo的数据库统计
+		long ret =0;
+		return ret;
+	}
+
+	/**
+	 * 查询某个用户是否订阅了某个主题
+	 * 先到本地缓存里用checkRegisteredStompDest去找一下topic session
+	 * 然后再去redis，然后再去mongodb， 三级缓存模式。不要单独使用
+	 * @param topicId
+	 * @param userId
+	 * @return
+	 */
+	public boolean checkTopicUser(String topicId, String userId)
+	{
+		userId = userId.toLowerCase();
+		TopicGroup group = queryTopicGroupObj(topicId);
+		boolean bret=false;
+		if (Collections.binarySearch(group.getUsers(), userId)>=0)
+		{
+			bret=true;
+		}
+		//检查用户是否存在于引用的群组里
+		List<ObjectId> list = group.getRefTopicGroupIds();
+		HashMap<String, String> userIdMap = new HashMap<String, String> ();
+		for (ObjectId groupId: list)
+		{
+			group = queryTopicGroupObj(groupId);
+			for(String uid : group.getUsers())
+			{
+				userIdMap.put(uid, "");
+			}
+		}
+		if (bret == false)
+		{
+			bret = userIdMap.get(userId)!=null;
+		}
+		return bret;	
+	}
+	//不检查引用主题群组
+	public boolean checkTopicGroupUser(String topicId, String userId)
+	{
+		userId = userId.toLowerCase();
+		TopicGroup group = queryTopicGroupObj(topicId);
+		boolean bret=false;
+		if (Collections.binarySearch(group.getUsers(), userId)>=0)
+		{
+			bret=true;
+		}
+		return bret;	
+	}	
+	public Map <String, String> getTopicUsersMap(String topicId)
+	{
+		TopicGroup group = queryTopicGroupObj(topicId);
+		//检查用户是否存在于引用的群组里
+		List<ObjectId> list = group.getRefTopicGroupIds();
+		HashMap<String, String> userIdMap = new HashMap<String, String> ();
+		for(String uid: group.getUsers())
+		{
+			userIdMap.put(uid, "");
+		}
+		for (ObjectId groupId: list)
+		{
+			group = queryTopicGroupObj(groupId);
+			for(String uid : group.getUsers())
+			{
+				userIdMap.put(uid, "");
+			}
+		}
+		return userIdMap;
+	}
+	public List<String> getTopicUsersList(String topicId)
+	{
+		List<String> ret = new ArrayList<String>();
+		getTopicUsersMap(topicId).keySet().forEach(k -> {
+			ret.add(k);
+		}
+        );
+		return ret;
+	}
+	public boolean checkTopicUser(TopicGroupRequest request)
+	{
+		return checkTopicUser(request.getTopicId(),request.getUserList().get(0));
+	}
+	//查询某个主题下的主题群组对象。分发通知时候使用, 保持到缓存
+	public TopicGroup queryTopicGroupObj(TopicGroupRequest request)
+	{
+		return queryTopicGroupObj(request.getTopicId());
+	}
+	public List<TopicGroup> queryTopicgroupObjByName(TopicGroupRequest request)
+	{
+		return TopicGroupDao.ByName(request.getTopicName());
+	}
+	
+	public List<TopicGroup> queryTopicgroupObjByObjectId(TopicGroupRequest request)
+	{
+		return TopicGroupDao.ByObjectId(request.getObjectId());
+	}	
+
+	public List <TopicGroup> queryTopicGroupObj(List<String>topicIds)
+	{
+		return  TopicGroupDao.BytopicId(topicIds);
+	}
+	public TopicGroup queryTopicGroupObjFromDb(String topicId)
+	{
+		return TopicGroupDao.BytopicId(topicId);
+	}
+	public TopicGroup queryTopicGroupObj(String topicId)
+	{
+		//先读取redis cache的用户列表。
+		TopicGroup topicObj=null;
+		/* 在session里缓存过了，实在没必要再去缓存，造成数据不一致的几率加大了
+		 * 先不用redis缓存。
+		String jsonstr = jedis.get(topicId);
+		if (jsonstr !=null)
+		{
+			
+			JSONObject jsonObject = new JSONObject().fromObject(jsonstr);
+			TopicGroupBase base = (TopicGroupBase)JSONObject.toBean(jsonObject, TopicGroup.class);
+			topicObj=new TopicGroup(base,topicId);
+		}
+		else
+		{
+			//30分钟内不过期。要同时在linux上配置redis.config “maxmemory-policy volatile-lru”
+			jedis.expire(topicId, 60*30);		
+		}*/
+		//如果redis里没存着， 从key value store里读出来。 
+		if (topicObj == null)
+		{
+			topicObj = TopicGroupDao.BytopicId(topicId);
+			syncTopicGroupCache(topicObj);
+		}
+		return topicObj;
+	}
+	public TopicGroup queryTopicGroupObj(ObjectId topicId)
+	{
+		TopicGroup topicObj=null;
+		if (topicObj == null)
+		{
+			topicObj = TopicGroupDao.BytopicId(topicId);
+			syncTopicGroupCache(topicObj);
+		}
+		return topicObj;		
+	}
+	//把主题群组对象缓存到redis
+	public void syncTopicGroupCache(TopicGroup topic)
+	{
+		/*
+		long type = topic.getTopicType();
+		if (type == IMConstants.typeIM
+				|| type == IMConstants.typeFileSubscriber
+				|| type == IMConstants.typeCaseSubcriber
+				)
+		{
+			TopicGroupBase base = topic.copyBase();
+	    	JSONObject jsonObject = new JSONObject().fromObject(base);
+	    	String key = topic.getId().toHexString();
+			jedis.set(key, jsonObject.toString());
+			//30分钟内不过期。要同时在linux上配置redis.config “maxmemory-policy volatile-lru”
+			jedis.expire(key, 60*30);
+		}
+		*/
+	}
+
+}

@@ -1,0 +1,236 @@
+//created by zhang jian xin 2016 @IBM
+package com.ibm.cloud.im.server.service.business;
+
+import java.io.IOException;
+import java.util.ArrayList;
+import java.util.List;
+
+import net.sf.json.JSONObject;
+
+import org.apache.commons.lang.StringUtils;
+import org.apache.commons.logging.Log;
+import org.apache.commons.logging.LogFactory;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.stereotype.Service;
+
+import com.ibm.cloud.im.constant.IMConstants;
+import com.ibm.cloud.im.model.data.KVStore.TopicGroup;
+import com.ibm.cloud.im.model.data.KVStore.UserData;
+import com.ibm.cloud.im.model.data.KVStoredao.UserDataDao;
+import com.ibm.cloud.im.model.response.IMNewMsgEvent;
+import com.ibm.cloud.im.model.response.DiscussGroupInfo;
+import com.ibm.cloud.im.model.rquest.MessageRequest;
+import com.ibm.cloud.im.model.rquest.TopicGroupRequest;
+import com.ibm.cloud.im.server.utils.SerializeCompTools;
+
+import redis.clients.jedis.Jedis;
+
+@Service
+public class UnifyMsgService {
+	private static Log logger = LogFactory.getLog(UnifyMsgService.class);
+	
+	
+    @Autowired
+    private Jedis jedis;
+    
+    @Autowired
+    private TopicAndGroupService topicGroupService;
+    
+    @Autowired
+    private UserDataDao userTopicsDao;
+    /**
+     * 直接发送消息
+     * @param channel
+     * @param msg
+     */
+    public void send(String channel, String msg)
+    {
+    	jedis.publish(channel,msg ); 
+    }
+    /**
+     * 转换成JSON后发送消息
+     * @param channel
+     * @param evt
+     */
+	public void convertAndSend(String channel, Object evt)
+    {
+    	//发往redis消息队列。
+    	JSONObject jsonObject = new JSONObject().fromObject(evt);
+    	String msgBody = jsonObject.toString();
+    	//if (msgBody.length()>200)  //暂时有问题，服务器干这事情得不偿失。
+    	//目前的方案是由客户端压缩上传。服务器不管内容也可以分散服务器的压力
+    	//起到加密， 防止被sniffer监测的效果。
+    	//{
+    	//	try {
+		//		msgBody= SerializeCompTools.compress(msgBody);
+		//	} catch (IOException e) {
+		//		// TODO Auto-generated catch block
+		//		e.printStackTrace();
+		//	}
+    	//}
+		jedis.publish(channel,msgBody );    	
+    }
+	public UserData loginPunch(String userId)
+	{
+		UserData ret=userTopicsDao.logInPunch(userId);
+		if (ret==null)
+		{
+			ret = createUserData(userId);
+		}
+		return ret;
+	}
+	public UserData createUserData(String userId)
+	{
+		return userTopicsDao.create(userId, null);		
+	}
+	private List <DiscussGroupInfo>  sortTopic(List <String> list)
+	{
+		List <DiscussGroupInfo> ret = new ArrayList<DiscussGroupInfo>();
+		while(true)
+		{
+			if (list!=null && list.size()>0)
+			{
+				List <TopicGroup> topicGroup = topicGroupService.queryTopicGroupObj(list);
+				if (topicGroup == null || topicGroup.size()==0)
+				{
+					break;
+				}
+				int limit=200;
+				int index = 0;
+				list.clear();
+				for (TopicGroup topicObj: topicGroup)
+				{
+					if (index>=limit)
+					{
+						break;
+					}
+					String topicId = topicObj.getId().toHexString();
+					list.add(topicId);					
+					DiscussGroupInfo info = new DiscussGroupInfo();
+					info.setGroupId(topicId);
+					info.setGroupName(topicObj.getTopicName());
+					info.setLastMsgTime(topicObj.getLastMsgTime());
+					info.setType(topicObj.getTopicType());
+					ret.add(info);
+					index++;
+				}
+			}
+			break;
+		}
+		return ret;
+	}
+	public void logoutPunch(String userId)
+	{
+		userTopicsDao.logoutPunch(userId);
+		//整理一下用户活动讨论组列表， 压缩到200个， 把不活动的讨论组剔除出去。
+		List <String> list = queryUserDiscussGroupIds(userId);
+		if(list.size()>0)
+		{
+			updateUserDiscussGroupIdList(userId, list);
+		}
+		list = queryUserCaseGroupIds(userId);
+		if(list.size()>0)
+		{
+			updateUserCaseGroupIdList(userId, list);
+		}
+		list = queryUserFileGroupIds(userId);
+		if(list.size()>0)
+		{
+			updateUserFileGroupIdList(userId, list);
+		}		
+	}
+	/**
+	 * 按讨论组活动程度给用户排个序
+	 * @param userId
+	 * @return
+	 */
+	public List <String> queryUserDiscussGroupIds(String userId)
+	{
+		List <String> list =  userTopicsDao.queryUserObj(userId).getDiscussGroupList();
+		if (list.size()>0)
+			sortTopic(list);
+		return list;
+	}
+	public List <String> queryUserCaseGroupIds(String userId)
+	{
+		List <String> list =  userTopicsDao.queryUserObj(userId).getCaseGroupList();
+		if (list.size()>0)
+			sortTopic(list);
+		return list;
+	}
+	public List <String> queryUserFileGroupIds(String userId)
+	{
+		List <String> list =  userTopicsDao.queryUserObj(userId).getFileGroupList();
+		if (list.size()>0)
+			sortTopic(list);
+		return list;
+	}	
+	public List <DiscussGroupInfo> queryUserDiscussGroups(String userId)
+	{
+		List <String> list =  userTopicsDao.queryUserObj(userId).getDiscussGroupList();
+		List <DiscussGroupInfo> ret = new ArrayList <DiscussGroupInfo>();
+		if (list.size()>0)
+			ret = sortTopic(list);
+		return ret;
+	}
+	public List <DiscussGroupInfo> queryUserCaseGroups(String userId)
+	{
+		List <String> list =  userTopicsDao.queryUserObj(userId).getCaseGroupList();
+		List <DiscussGroupInfo> ret = new ArrayList <DiscussGroupInfo>();
+		if (list.size()>0)
+			ret = sortTopic(list);
+		return ret;
+	}
+	public List <DiscussGroupInfo> queryUserFileGroups(String userId)
+	{
+		List <String> list =  userTopicsDao.queryUserObj(userId).getFileGroupList();
+		List <DiscussGroupInfo> ret = new ArrayList <DiscussGroupInfo>();
+		if (list.size()>0)
+			ret = sortTopic(list);
+		return ret;
+	}	
+	public void updateUserDiscussGroupIdList(String userId, List <String> topicIds)
+	{
+		userTopicsDao.updateDiscussTopicIdList(userId, topicIds);
+	}
+	public void updateUserCaseGroupIdList(String userId, List <String> topicIds)
+	{
+		userTopicsDao.updateDiscussTopicIdList(userId, topicIds);
+	}
+	public void updateUserFileGroupIdList(String userId, List <String> topicIds)
+	{
+		userTopicsDao.updateDiscussTopicIdList(userId, topicIds);
+	}	
+	public void addUserDiscussGroupId(List<String> userIds, String topicId)
+	{
+		for (String userId:userIds)
+			userTopicsDao.addDiscussGroup(userId, topicId);
+	}
+	public void addUserCaseGroupId(List<String> userIds, String topicId)
+	{
+		for (String userId:userIds)
+			userTopicsDao.addCaseGroup(userId, topicId);
+	}
+	public void addUserFileGroupId(List<String> userIds, String topicId)
+	{
+		for (String userId:userIds)
+			userTopicsDao.addDiscussGroup(userId, topicId);
+	}	
+	public void removeUserDiscussGroupIds(List<String> userIds, String topicId)
+	{
+		for (String userId:userIds)
+			userTopicsDao.removeDiscussGroup(userId, topicId);		
+	}
+	public void removeUserDiscussGroupId(String userId, String topicId)
+	{
+			userTopicsDao.removeCaseGroup(userId, topicId);		
+	}
+	public void removeUserCaseGroupId(String userId, String topicId)
+	{
+			userTopicsDao.removeCaseGroup(userId, topicId);		
+	}
+	public UserData queryUserDataObj(String userId)
+	{
+		return userTopicsDao.queryUserObj(userId);
+	}
+}

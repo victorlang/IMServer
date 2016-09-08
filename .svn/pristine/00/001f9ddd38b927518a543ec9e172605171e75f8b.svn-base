@@ -1,0 +1,52 @@
+###created by zhang jian xin IBM
+
+server.port=8080
+
+## Set redis.host as empty string 
+## to disable the "redis cluster server mode" and open the "single node server mode."
+redis.host= 9.115.42.112
+redis.port= 6379
+redis.topic= test*
+
+#set both kafka.enableProducer and kafka.enableConsumer as false
+# to disable the "kafka cluster server mode"
+#for multiple brokers, use semicolon seperating them. eg. "9.112.248.126:9092,broker2:9092"
+kafka.enableProducer=true
+kafka.enableConsumer=true
+kafka.brokerlist=9.112.248.126:9092
+kafka.topic=IMIBM
+kafka.zookeeper=9.112.248.126:2181
+kafka.groupId=IMServer
+
+#It would be better if there are 4 mongo servers
+#so that we are able to sharding them according to topicId and userId
+#to get the awesome performance and fabulous scalability.
+##instant message data base
+mongo_IMsg.host=9.115.42.112
+mongo_IMsg.port=27017
+mongo_IMsg.database=IMServer
+
+mongo_IMail.host=9.115.42.112
+mongo_IMail.port=27017
+mongo_IMail.database=IMServer
+
+mongo_IMUserData.host=9.115.42.112
+mongo_IMUserData.port=27017
+mongo_IMUserData.database=IMServer
+
+mongo_IMTopicGroup.host=9.115.42.112
+mongo_IMTopicGroup.port=27017
+mongo_IMTopicGroup.database=IMServer
+
+# at least 10 minutes for each session
+# if the session keeps no activity for 30 minutes, I will close it
+IMSession.timeoutMinutes=30
+
+#system out warning threshold for the maximum channels.
+# when it is alerted , check your javascript code
+# whether there are too many unclosed subscribed channels 
+IMSession.MaxChannelWarningForSingleUser=200
+
+#test user/password for testing
+IMServer.testAccounts=user1/password1,user2/password2,user3/password3,user4/password4,user5/password5,user6/password6,user7/password7,user8/password8,user9/password9,user10/password10,user11/password11,user12/password12,user13/password13,user14/password14,user15/password15
+

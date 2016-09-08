@@ -1,0 +1,47 @@
+//created by zhang jian xin 2016 @IBM
+package com.ibm.cloud.im.model.response;
+
+import java.util.List;
+
+import com.ibm.cloud.im.constant.IMConstants;
+
+public class QueryDiscussGroupsResponse {
+	String  eventName=IMConstants.queryDiscussGroupResponse;
+
+	List<DiscussGroupInfo> discussGroups;
+	List<DiscussGroupInfo> caseGroups;
+	List<DiscussGroupInfo> fileGroups;
+
+	public List<DiscussGroupInfo> getCaseGroups() {
+		return caseGroups;
+	}
+
+	public void setCaseGroups(List<DiscussGroupInfo> caseGroups) {
+		this.caseGroups = caseGroups;
+	}
+
+	public List<DiscussGroupInfo> getFileGroups() {
+		return fileGroups;
+	}
+
+	public void setFileGroups(List<DiscussGroupInfo> fileGroups) {
+		this.fileGroups = fileGroups;
+	}
+
+	public List<DiscussGroupInfo> getDiscussGroups() {
+		return discussGroups;
+	}
+
+	public void setDiscussGroups(List<DiscussGroupInfo> discussGroups) {
+		this.discussGroups = discussGroups;
+	}
+
+	public void setEventName(String eventName) {
+		this.eventName = eventName;
+	}
+
+	public String getEventName() {
+		return eventName;
+	}
+
+}

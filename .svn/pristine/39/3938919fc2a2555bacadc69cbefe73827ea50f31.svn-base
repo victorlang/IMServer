@@ -1,0 +1,426 @@
+//created by zhang jian xin 2016 @IBM
+package com.ibm.cloud.im.server.controller;
+
+import java.util.Date;
+import java.util.List;
+
+import org.apache.commons.lang.StringUtils;
+import org.apache.commons.logging.Log;
+import org.apache.commons.logging.LogFactory;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.messaging.handler.annotation.DestinationVariable;
+import org.springframework.messaging.handler.annotation.MessageMapping;
+import org.springframework.messaging.simp.SimpMessageHeaderAccessor;
+//import org.springframework.messaging.handler.annotation.SendTo;
+import org.springframework.messaging.simp.annotation.SubscribeMapping;
+//import org.springframework.security.web.csrf.CsrfToken;
+import org.springframework.stereotype.Controller;
+import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestMethod;
+import org.springframework.web.bind.annotation.ResponseBody;
+
+import com.ibm.cloud.im.constant.IMConstants;
+import com.ibm.cloud.im.exit.service.UserAccountsMgr;
+import com.ibm.cloud.im.model.data.KVStore.MailBody;
+import com.ibm.cloud.im.model.data.KVStore.MessageBody;
+import com.ibm.cloud.im.model.data.KVStore.TopicGroup;
+import com.ibm.cloud.im.model.data.KVStore.UserData;
+import com.ibm.cloud.im.model.data.KVStoredao.*;
+import com.ibm.cloud.im.model.response.IMNewMsgEvent;
+import com.ibm.cloud.im.model.response.OperateMsgsResponse;
+import com.ibm.cloud.im.model.response.QueryDiscussGroupsResponse;
+import com.ibm.cloud.im.model.response.DiscussGroupInfo;
+import com.ibm.cloud.im.model.response.QueryMailResponse;
+import com.ibm.cloud.im.model.response.SubscribeInitEvent;
+import com.ibm.cloud.im.model.rquest.MessageRequest;
+import com.ibm.cloud.im.model.rquest.SendMailRequest;
+import com.ibm.cloud.im.server.service.business.MailDataService;
+import com.ibm.cloud.im.server.service.business.MsgDataService;
+import com.ibm.cloud.im.server.service.business.TopicAndGroupService;
+import com.ibm.cloud.im.server.service.business.UnifyMsgService;
+import com.ibm.cloud.im.server.service.infrastructure.SessionMgr;
+import com.ibm.cloud.im.server.utils.Utils;
+
+import redis.clients.jedis.Jedis;
+
+import com.ibm.cloud.im.model.response.MsgRespondBody;
+
+@Controller
+public class UnifyMsgController {
+	private static Log logger = LogFactory.getLog(UnifyMsgController.class);
+	@Autowired
+	private UnifyMsgService messagingTemplate;
+	
+    @Autowired
+    SessionMgr sessionMgr;
+    
+    @Autowired
+    UserAccountsMgr accountMgr;
+    
+    @Autowired
+    private Jedis jedis;
+    
+    @Autowired
+    private TopicAndGroupService topicGroupService;
+	
+    @Autowired
+    private UnifyMsgService unifyMsgService;
+    
+    @Autowired
+    private TopicGroupDao TopicGroupDao;
+    
+    @Autowired
+    private MsgDataService msgDataService;
+    
+    @Autowired
+    private MailDataService mailDataService;
+    
+    //处理客户端的subcribe订阅事件
+    @SubscribeMapping("/{topicId}")
+    public SubscribeInitEvent subScribeInitWithoutParameter(SimpMessageHeaderAccessor accessor,@DestinationVariable String topicId)
+    {
+    	
+    	String dest = accessor.getDestination();
+    	//在这里查询返回一个讨论组最近的几条消息
+    	//使得用户刚刚订阅一个讨论组的时候， 可以看到讨论组最近的几条消息。
+    	//在这里连接Redis的消息队列主题。
+    	SubscribeInitEvent evt = new SubscribeInitEvent();
+    	evt.setTopicId(dest);
+	    String command = (String) accessor.getHeader("stompCommand").toString();
+
+	    if (command.equalsIgnoreCase("SUBSCRIBE"))
+    	{
+	    	if (sessionMgr.checkRegisteredStompDest(dest,accessor.getSessionId()))
+	    	{
+	    		if (dest.startsWith(IMConstants.destDiscuss) || dest.startsWith(IMConstants.destTopic))
+		    	{
+	    			TopicGroup topicGroup = TopicGroupDao.BytopicId(topicId);
+		    		MessageRequest request = new MessageRequest();
+		    		request.setTopicId(topicId);
+		    		//默认返回最新的三条
+		    		//这之前由于已经在IMChannelInterceptor上订阅过了， 因此不可能有消息丢失， 
+		    		//但后续的通知消息里可能有重复通知的消息， 由前端进行过滤即可。服务器不做处理
+		    		//
+		    		request.setMsgId(Utils.makeFarFutureIdString());
+		    		request.setMsgRetCnt(1);
+		    		 List <MessageBody> msgs = msgDataService.lookupTopicMessages(request);
+		    		 //查询上次logout以后产生的消息数量。
+		    		 UserData obj = unifyMsgService.queryUserDataObj(sessionMgr.getOperatorName(accessor));
+		    		 long time = obj.getLastLogOffTime()-2000;
+		    		 long count = msgDataService.sumMsgCount(topicId, Utils.convertTime2Id(time));
+		    		 evt.setMsgCountSinceLastLogoff(count);
+		    		 evt.setMsgTotalCountInGroup(topicGroup.getLastMsgSeq());
+		    		 evt.setMsgs(msgs);	
+		    		 evt.setTopicType(topicGroup.getTopicType());
+		    		 evt.setUsers(topicGroup.getUsers());
+		    		 evt.setTopicName(topicGroup.getTopicName());
+		    		 evt.setTopicOwner(topicGroup.getCreator());
+		    		 evt.setTopicId(topicId);
+		    	}else
+		    	{
+		    		evt.setTopicId(dest);
+		    		evt.setTopicOwner(sessionMgr.getOperatorName(accessor));
+		    	}
+	    	}
+    	}
+    	return evt;
+    }
+    @SubscribeMapping("/{path1}/{path2}")
+    public SubscribeInitEvent subScribeInitWithOneParameter(@DestinationVariable String path1,SimpMessageHeaderAccessor accessor)
+    {
+    	SubscribeInitEvent evt = new SubscribeInitEvent();
+    	return evt;
+    }
+    //没有主题群组管理的内容。 也会发通知广播消息通知在线用户， 消息不会被保存和持久化。 
+    @MessageMapping("addChildMessage")
+    public boolean addMsg4Msg(SimpMessageHeaderAccessor accessor,MessageRequest request)
+    {
+    	request.setOperatorId(sessionMgr.getOperatorName(accessor));
+    	boolean bLegal = false;
+
+    	//检查是否是合法操作， 操作员是否是在讨论组成员列表里
+    	IMNewMsgEvent evt = new IMNewMsgEvent();
+    	MessageBody msgBody = null;
+    	//存储消息    	
+    	 if (StringUtils.isEmpty(request.getMsgId()))
+     	{
+     		//对无订阅主题的消息， 评论下的评论。
+     		msgBody= msgDataService.addMsg4Msg(request);
+     		if (msgBody != null)
+     		{
+         		evt.setParentMsgId(request.getMsgId());
+     			bLegal=true;
+     		}
+     	}
+     	if (msgBody !=null)
+ 		{
+     		evt.setMsg(new MsgRespondBody(msgBody));
+     		String destination = IMConstants.destTopic+"/"+request.getMsgId();
+     		messagingTemplate.convertAndSend(destination, evt);
+ 		}
+ 		if (!bLegal){
+ 			logger.fatal("ilegal add child message by "+request.getUserid());
+ 		}
+ 		return bLegal;    	 
+    }
+    @RequestMapping(value = "/IMServer/addChildMessage", method= RequestMethod.POST)
+    public @ResponseBody boolean addMsg4Msg(@RequestBody MessageRequest request)
+    {
+    	return addMsg4Msg(null, request);
+    }
+
+    public boolean publish2Group(SimpMessageHeaderAccessor accessor,MessageRequest request)
+    {
+    	request.setOperatorId(sessionMgr.getOperatorName(accessor));
+    	boolean bLegal = false;
+
+    	//检查是否是合法操作， 操作员是否是在讨论组成员列表里
+    	IMNewMsgEvent evt = new IMNewMsgEvent();
+    	MessageBody msgBody = null;
+    	String topicId = request.getTopicId();
+    	//存储消息
+    	if (!StringUtils.isEmpty(topicId))
+    	{
+    		//对有订阅主题的消息， 讨论组， case, 文件
+    		//三级缓存检查合法访问。
+        	bLegal = (sessionMgr != null && sessionMgr.checkRegisteredStompDest(IMConstants.destDiscuss+"/"+topicId,accessor.getSessionId()))
+    				|| topicGroupService.checkTopicUser(topicId, request.getUserid());
+        	if (bLegal)
+        	{
+        		msgBody = msgDataService.addTopicMessage(request);
+        		if (msgBody != null)
+        		{
+            		evt.setTopicId(topicId);
+            		bLegal=true;
+        		}
+        	}
+    	}else
+    	{
+    		bLegal =  false;
+    	}
+    	if (msgBody !=null)
+		{
+    		evt.setMsg(new MsgRespondBody(msgBody));
+    		String destination = IMConstants.destDiscuss+"/"+request.getTopicId();
+    		messagingTemplate.convertAndSend(destination, evt);
+		}
+		if (!bLegal){
+			logger.fatal("ilegal sending message by "+request.getUserid());
+		}
+		return bLegal;
+    }
+    //发给讨论组。
+    @MessageMapping("publish2DiscussGroup")
+    public boolean publish2DiscussGroup(SimpMessageHeaderAccessor accessor,MessageRequest request)
+    {
+    	return publish2Group(accessor, request);
+    }   
+    @MessageMapping("publish2CaseGroup")
+    public boolean publish2CaseGroup(SimpMessageHeaderAccessor accessor,MessageRequest request)
+    {
+    	return publish2Group(accessor, request);
+    }
+    @MessageMapping("publish2FileGroup")
+    public boolean publish2FileGroup(SimpMessageHeaderAccessor accessor,MessageRequest request)
+    {
+    	return publish2Group(accessor, request);
+    }    
+    //讨论组中增加一条消息。(for REST API)
+    @RequestMapping(value = "/IMServer/publish2DiscussGroup", method= RequestMethod.POST)
+    public @ResponseBody boolean publish2DiscussGroup(@RequestBody MessageRequest request)
+    {
+    	return publish2DiscussGroup(null, request);
+    }
+    @RequestMapping(value = "/IMServer/publish2CaseGroup", method= RequestMethod.POST)
+    public @ResponseBody boolean publish2CaseGroup(@RequestBody MessageRequest request)
+    {
+    	return publish2CaseGroup(null, request);
+    }
+    @RequestMapping(value = "/IMServer/publish2FileGroup", method= RequestMethod.POST)
+    public @ResponseBody boolean publish2FileGroup(@RequestBody MessageRequest request)
+    {
+    	return publish2FileGroup(null, request);
+    }    
+    //查询讨论组中已经存在的消息
+    @MessageMapping("queryDiscussGroupMessage")
+    public OperateMsgsResponse queryGroupMessage(SimpMessageHeaderAccessor accessor,MessageRequest request)
+    {
+    	request.setOperatorId(sessionMgr.getOperatorName(accessor));
+    	boolean bLegal = false;
+    	OperateMsgsResponse evt = new OperateMsgsResponse();
+    	String topicId = request.getTopicId();
+		 evt.setTopicId(request.getTopicId()); 
+    	//参数校验
+    	if (StringUtils.isEmpty(request.getMsgId()))
+    	{
+    		bLegal=false;
+    		return evt;
+    	}
+    	//需要做安全验证， 和加人踢人一样处理
+    	bLegal = (sessionMgr != null && sessionMgr.checkRegisteredStompDest(IMConstants.destDiscuss+"/"+topicId,accessor.getSessionId()))
+				|| topicGroupService.checkTopicUser(topicId, request.getUserid());
+    	if (bLegal)
+    	{
+    		List <MessageBody> msgs = msgDataService.lookupTopicMessages(request);
+   		 	evt.setkvStoreMsgs(msgs);	
+    	}  	
+    	return evt;
+    }
+    @RequestMapping(value = "/IMServer/queryDiscussGroupMessage", method= RequestMethod.POST)
+    public @ResponseBody OperateMsgsResponse queryGroupMessageREST(@RequestBody MessageRequest request)
+    {
+    	return queryGroupMessage(null, request);
+    }
+    //撤销一条消息
+    @MessageMapping("delDiscussGroupMessage")
+    public void delGroupMessage(SimpMessageHeaderAccessor accessor,MessageRequest request)
+    {
+    	request.setOperatorId(sessionMgr.getOperatorName(accessor));
+    	boolean bLegal;
+    	OperateMsgsResponse evt = new OperateMsgsResponse();
+    	String topicId = request.getTopicId();
+		 evt.setTopicId(request.getTopicId()); 
+    	//参数校验
+    	if (StringUtils.isEmpty(request.getMsgId()))
+    	{
+    		bLegal=false;
+    	}
+    	//需要做安全验证， 和加人踢人一样处理
+    	bLegal = (sessionMgr != null && sessionMgr.checkRegisteredStompDest(IMConstants.destDiscuss+"/"+topicId,accessor.getSessionId()))
+				|| topicGroupService.checkTopicUser(topicId, request.getUserid());
+    	if (bLegal)
+    	{
+    		if(msgDataService.removeMessageById(request))
+    		{
+    			//发在线通知消息
+    			evt.setEventName(IMConstants.removeMsgRspEvt);
+    			evt.setMsgId(request.getMsgId());
+        		String destination = IMConstants.destDiscuss+"/"+request.getTopicId();
+        		messagingTemplate.convertAndSend(destination, evt);    			
+    		}
+    		
+    	}  	    	
+    }
+    @RequestMapping(value = "/IMServer/delDiscussGroupMessage", method= RequestMethod.POST)
+    public @ResponseBody void delGroupMessage(@RequestBody MessageRequest request)
+    {
+    	delGroupMessage(null, request);
+    }
+    /**
+     * 查询个人用户加入的讨论组
+     * @param accessor
+     * @param request
+     * @return
+     */
+    @MessageMapping("queryUserBookedDiscussGroup")
+    public void queryUserBookedDiscussGroup(SimpMessageHeaderAccessor accessor,MessageRequest request)
+    {    
+    	QueryDiscussGroupsResponse evt = new QueryDiscussGroupsResponse();
+    	request.setOperatorId(sessionMgr.getOperatorName(accessor));
+    	String userId = request.getUserid();
+    	List<DiscussGroupInfo> list = unifyMsgService.queryUserDiscussGroups(userId);
+    	evt.setDiscussGroups(list);
+    	list = unifyMsgService.queryUserCaseGroups(userId);
+    	evt.setCaseGroups(list);
+    	list = unifyMsgService.queryUserFileGroups(userId);
+    	evt.setFileGroups(list);
+		String destination = IMConstants.destNotify+"/"+request.getUserid();
+		messagingTemplate.convertAndSend(destination, evt);
+    }
+    @RequestMapping(value = "/IMServer/queryUserBookedDiscussGroup", method= RequestMethod.POST)
+    public @ResponseBody void queryUserBookedDiscussGroupRest(@RequestBody MessageRequest request)
+    {
+    	queryUserBookedDiscussGroup(null, request);
+    }
+    @MessageMapping("queryUserMails")
+    public void queryUserMailsGroup(SimpMessageHeaderAccessor accessor,MessageRequest request)
+    {    
+    	QueryMailResponse evt = new QueryMailResponse();
+    	request.setOperatorId(sessionMgr.getOperatorName(accessor));
+    	String userId = request.getUserid();
+		 UserData obj = unifyMsgService.queryUserDataObj(sessionMgr.getOperatorName(accessor));
+		 long timestamp = obj.getLastLogOffTime()-2000;
+    	 List<MailBody> sinceLogofflist = mailDataService.lookupMails(userId, timestamp, 200, 1, true);
+    	 //只查询一百天内的未读邮件
+    	 timestamp = (new Date()).getTime()-1000*60*60*24*100;
+    	 List<MailBody> unreadList = mailDataService.lookupMails(userId, timestamp, 200, 1, false);
+    	 evt.setMailSinceLastLogOff(sinceLogofflist);
+    	 evt.setMailUnread(unreadList);
+		String destination = IMConstants.destNotify+"/"+request.getUserid();
+		messagingTemplate.convertAndSend(destination, evt);
+    }
+    @RequestMapping(value = "/IMServer/queryUserMails", method= RequestMethod.POST)
+    public @ResponseBody void queryUserMailsGroup(@RequestBody MessageRequest request)
+    {
+    	queryUserBookedDiscussGroup(null, request);
+    }
+        
+    //发邮件
+    @MessageMapping("sendMail2User")
+    public boolean sendMail2User(SimpMessageHeaderAccessor accessor,SendMailRequest request)
+    {
+    	request.setSenderId(sessionMgr.getOperatorName(accessor));
+    	//检查过滤用户组
+    	request.setToIdList(accountMgr.getValidatedUsers(request.getToIdList()));
+    	if (request.getToIdList().size()==0)
+    	{
+    		return false;
+    	}
+    	//检查是否是合法操作， 操作员是否是在讨论组成员列表里
+    	if (!StringUtils.isEmpty(request.getContent()))
+    	{
+    		mailDataService.sendMails(request);
+    	}
+
+		return true;
+    }
+    //(for REST API)
+    @RequestMapping(value = "/IMServer/sendMail2User", method= RequestMethod.POST)
+    public @ResponseBody boolean sendMail2User(@RequestBody SendMailRequest request)
+    {
+    	return sendMail2User(null, request);
+    } 
+    //标示为已读邮件
+    @MessageMapping("markReadedMail")
+    public boolean markReadedMail(SimpMessageHeaderAccessor accessor,SendMailRequest request)
+    {
+    	request.setSenderId(sessionMgr.getOperatorName(accessor));
+    	//检查是否是合法操作， 操作员是否是在讨论组成员列表里
+    	if (!StringUtils.isEmpty(request.getMsgId()))
+    	{
+    		mailDataService.readMail(request);
+    	}
+
+		return true;
+    }
+    //(for REST API)
+    @RequestMapping(value = "/IMServer/markReadedMail", method= RequestMethod.POST)
+    public @ResponseBody boolean markReadedMail(@RequestBody SendMailRequest request)
+    {
+    	return sendMail2User(null, request);
+    }
+    @MessageMapping("removeMail")
+    public boolean removeMail(SimpMessageHeaderAccessor accessor,SendMailRequest request)
+    {
+    	request.setSenderId(sessionMgr.getOperatorName(accessor));
+    	//检查是否是合法操作， 操作员是否是在讨论组成员列表里
+    	if (!StringUtils.isEmpty(request.getMsgId()))
+    	{
+    		mailDataService.removeMailById(request);
+    	}
+		return true;
+    }
+    //(for REST API)
+    @RequestMapping(value = "/IMServer/removeMail", method= RequestMethod.POST)
+    public @ResponseBody boolean removeMail(@RequestBody SendMailRequest request)
+    {
+    	return sendMail2User(null, request);
+    }     
+    /*
+    //security websocket token
+    @RequestMapping("/csrf")
+    public CsrfToken csrf(CsrfToken token) {
+        return token;
+    }    */
+}

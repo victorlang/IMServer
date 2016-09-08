@@ -1,0 +1,357 @@
+//created by zhang jian xin 2016 @IBM
+package com.ibm.cloud.im.server.controller;
+
+import java.util.List;
+
+import org.apache.commons.logging.Log;
+import org.apache.commons.logging.LogFactory;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.messaging.handler.annotation.MessageMapping;
+import org.springframework.messaging.simp.SimpMessageHeaderAccessor;
+import org.springframework.stereotype.Controller;
+import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestMethod;
+import org.springframework.web.bind.annotation.ResponseBody;
+//import org.springframework.security.web.bind.annotation.AuthenticationPrincipal;
+import com.ibm.cloud.im.constant.IMConstants;
+import com.ibm.cloud.im.exit.service.UserAccountsMgr;
+import com.ibm.cloud.im.model.data.KVStore.TopicGroup;
+import com.ibm.cloud.im.model.response.TopicGroupEvent;
+import com.ibm.cloud.im.model.rquest.TopicGroupRequest;
+import com.ibm.cloud.im.server.service.business.TopicAndGroupService;
+import com.ibm.cloud.im.server.service.business.UnifyMsgService;
+import com.ibm.cloud.im.server.service.infrastructure.SessionMgr;
+
+
+import redis.clients.jedis.Jedis;
+
+@Controller
+public class TopicGroupController {
+	private static Log logger = LogFactory.getLog(TopicGroupController.class);
+	@Autowired
+	private UnifyMsgService messagingTemplate;
+	
+    @Autowired
+    private Jedis jedis;
+    
+    @Autowired
+    SessionMgr sessionMgr;
+    
+    @Autowired
+    UserAccountsMgr accountMgr;
+    
+    @Autowired
+    private TopicAndGroupService topicGroupService;
+    
+    @Autowired
+    private UnifyMsgService unifyMsgService;
+    
+
+    public String createGroup(SimpMessageHeaderAccessor accessor, TopicGroupRequest request/*,@AuthenticationPrincipal User op*/)
+    {
+    	request.setOperatorId(sessionMgr.getOperatorName(accessor));
+    	//检查过滤用户组
+    	request.setUserList(accountMgr.getValidatedUsers(request.getUserList()));
+    	//存储
+    	request.setTopicType(request.getTopicType());
+    	TopicGroup newobj = topicGroupService.createTopicAndGroup(request);
+    	TopicGroupEvent evt = new TopicGroupEvent();
+    	evt.setFounderID(newobj.getCreator());
+    	evt.setTopicId(newobj.getId().toHexString());
+    	evt.setEvtype(IMConstants.topicNew);
+        evt.setTopicName(newobj.getTopicName());   
+        evt.setOperatorId(request.getOperatorId());
+    	//通知相关用户加新组的事件
+        List <String> userlist = newobj.getUsers();
+        if (userlist.size()>0)
+        {
+        	unifyMsgService.addUserDiscussGroupId(request.getUserList(), evt.getTopicId());
+        }
+        evt.setUserList(userlist);
+        //通知每个用户个人消息队列，让客户端发起对新主题的订阅。 
+    	for (String user: userlist)
+    	{
+    		String dest = IMConstants.destNotify +"/"+user;
+    		try{
+    			messagingTemplate.convertAndSend(dest, evt);
+    		}catch(Exception e)
+    		{
+    			logger.fatal(e);
+    			System.out.println(e);
+    		}
+    	}
+    	return evt.getTopicId();
+    }
+    //创建一个讨论组
+    @MessageMapping("/createDiscussGroup")
+    public String createDiscussGroup(SimpMessageHeaderAccessor accessor, TopicGroupRequest request/*,@AuthenticationPrincipal User op*/)
+    {
+    	request.setTopicType(IMConstants.typeIM);
+    	return createGroup(accessor, request);
+    }    
+    @MessageMapping("/createCaseGroup")
+    public String createCaseGroup(SimpMessageHeaderAccessor accessor, TopicGroupRequest request/*,@AuthenticationPrincipal User op*/)
+    {
+    	request.setTopicType(IMConstants.typeCaseSubcriber);
+    	return createGroup(accessor, request);
+    }
+    @MessageMapping("/createFileGroup")
+    public String createFileGroup(SimpMessageHeaderAccessor accessor, TopicGroupRequest request/*,@AuthenticationPrincipal User op*/)
+    {
+    	request.setTopicType(IMConstants.typeFileSubscriber);
+    	return createGroup(accessor, request);
+    }
+    
+    @RequestMapping(value = "/IMServer/createDiscussGroup", method= RequestMethod.POST)
+    public @ResponseBody String createGroupREST(@RequestBody TopicGroupRequest request/*,@AuthenticationPrincipal User op*/)
+    {
+    	return createGroup(null, request);
+    }
+    @RequestMapping(value = "/IMServer/createCaseGroup", method= RequestMethod.POST)
+    public @ResponseBody String createCaseREST(@RequestBody TopicGroupRequest request/*,@AuthenticationPrincipal User op*/)
+    {
+    	return createCaseGroup(null, request);
+    }
+    @RequestMapping(value = "/IMServer/createFileGroup", method= RequestMethod.POST)
+    public @ResponseBody String createFileREST(@RequestBody TopicGroupRequest request/*,@AuthenticationPrincipal User op*/)
+    {
+    	return createFileGroup(null, request);
+    }    
+    //主题改名字
+    public void updateTopicName(SimpMessageHeaderAccessor accessor,TopicGroupRequest request)
+    {
+    	request.setOperatorId(sessionMgr.getOperatorName(accessor));  	
+    	TopicGroup newobj = topicGroupService.updateTopicName(request);
+     	TopicGroupEvent evt = new TopicGroupEvent(newobj.getId().toHexString(),newobj.getCreator(), IMConstants.topicRename);
+     	evt.setTopicName(newobj.getTopicName()); 
+     	evt.setOperatorId(request.getOperatorId());
+     	evt.setTopicId(newobj.getId().toHexString());
+     	evt.setEvtype(IMConstants.topicRename);
+    	//通知相关用户加新组的事件
+     	//不需要通知每个用户， 只需要通知在线的订阅该主题的用户即可
+     	/*List <String> userlist = newobj.getUserList();
+    	for (String user: userlist)
+    	{
+    		String dest = "/discuss/"+user;
+    		try{
+    			messagingTemplate.convertAndSend(dest, evt);
+    		}catch(Exception e)
+    		{
+    			logger.fatal(e);
+    		}
+    	}*/
+    	String destination = IMConstants.destDiscuss +"/"+evt.getTopicId();
+        messagingTemplate.convertAndSend(destination, evt);       	
+    } 
+    @MessageMapping("/DiscussGroupRename")
+    public void updateDiscussTopicName(SimpMessageHeaderAccessor accessor,TopicGroupRequest request)
+    {
+    	updateTopicName(accessor, request);
+    }
+    
+    @RequestMapping(value = "/IMServer/DiscussGroupRename", method= RequestMethod.POST)
+    public @ResponseBody void updateTopicNameREST(@RequestBody TopicGroupRequest request)
+    {
+    	updateTopicName(null, request);
+    } 
+    //主题的创建者删除主题。
+    @MessageMapping("/removeDiscussGroup")
+    public void removeTopic(SimpMessageHeaderAccessor accessor,TopicGroupRequest request)
+    {
+    	request.setOperatorId(sessionMgr.getOperatorName(accessor));
+    	
+    	//存储
+    	TopicGroup newobj = topicGroupService.removeTopic(request);
+    	TopicGroupEvent evt = new TopicGroupEvent();
+    	evt.setFounderID(newobj.getCreator());
+    	evt.setTopicId(newobj.getId().toHexString());
+    	evt.setOperatorId(request.getOperatorId());
+    	evt.setEvtype(IMConstants.topicDestroy);
+        evt.setTopicName(newobj.getTopicName());
+    	unifyMsgService.removeUserDiscussGroupIds(newobj.getUsers(), evt.getTopicId());
+    	//通知相关用户加新组的事件
+        /*List <String> userlist = newobj.getUserList();
+    	for (String user: userlist)
+    	{
+    		String dest = "/notify/"+user;
+    		try{
+    			messagingTemplate.convertAndSend(dest, evt);
+    		}catch(Exception e)
+    		{
+    			
+    		}
+    	} */
+    	String destination = IMConstants.destDiscuss +"/"+evt.getTopicId();
+        messagingTemplate.convertAndSend(destination, evt);         
+    }  
+    @RequestMapping(value = "/IMServer/removeDiscussGroup", method= RequestMethod.POST)
+    public  @ResponseBody void removeTopicREST(@RequestBody TopicGroupRequest request)
+    {
+    	removeTopic(null, request);
+    }
+    //用来为已经存在的一个讨论组添加成员。
+    public void addTopicGroupUser(SimpMessageHeaderAccessor accessor,TopicGroupRequest request)
+    {
+    	request.setOperatorId(sessionMgr.getOperatorName(accessor));
+    	request.setUserList(accountMgr.getValidatedUsers(request.getUserList()));
+    	//存储
+    	TopicGroup newobj = null;
+    	if(request.getUserList().size()==0 || request.getTopicId().isEmpty())
+    	{
+    		return;
+    	}    	
+    	if  ((newobj=topicGroupService.addUsers(request))==null)
+    		return;
+    	if(request.getUserList().size()==0)
+    	{
+    		return;
+    	}
+    	String topicId = newobj.getId().toHexString();
+    	unifyMsgService.addUserDiscussGroupId(request.getUserList(), topicId);
+    	//通知相关用户加新组的事件
+    	//List <String> oldUserList = topicGroupService.queryTopicGroupObj(request).getUserList();
+    	TopicGroupEvent evt = new TopicGroupEvent();
+    	evt.setTopicId(topicId);
+    	evt.setFounderID(newobj.getCreator());
+    	evt.setOperatorId(request.getOperatorId());
+    	evt.setUserList(request.getUserList());
+    	evt.setTopicName(newobj.getTopicName());
+    	evt.setEvtype(IMConstants.topicAddNotify);
+    	//通知群内的用户， 某些用户被加到讨论组里。
+    	String destination = IMConstants.destDiscuss +"/"+topicId;
+        messagingTemplate.convertAndSend(destination, evt);  
+        //通知新加入的用户， 让他们主动发起订阅。
+        evt.setEvtype(IMConstants.topicAdd);
+    	for (String user: request.getUserList())
+    	{
+    		String dest = IMConstants.destNotify +"/"+user;
+    		try{
+    			messagingTemplate.convertAndSend(dest, evt);
+    		}catch(Exception e)
+    		{
+    			System.out.println(e);
+    		}
+    	} 
+    	//处理新加入用户的个人订阅表
+    }
+    @MessageMapping("/addDiscussGroupUser")
+    public void addDiscussGroupUser(SimpMessageHeaderAccessor accessor,TopicGroupRequest request)
+    {
+    	request.setTopicType(IMConstants.typeIM);
+    	addTopicGroupUser(accessor, request);
+    }
+    @MessageMapping("/addCaseGroupUser")
+    public void addCaseGroupUser(SimpMessageHeaderAccessor accessor,TopicGroupRequest request)
+    {
+    	request.setTopicType(IMConstants.typeCaseSubcriber);
+    	addTopicGroupUser(accessor, request);
+    }
+    @MessageMapping("/addFileGroupUser")
+    public void addFileGroupUser(SimpMessageHeaderAccessor accessor,TopicGroupRequest request)
+    {
+    	request.setTopicType(IMConstants.typeFileSubscriber);
+    	addTopicGroupUser(accessor, request);
+    }
+    
+    @RequestMapping(value = "/IMServer/addDiscussGroupUser", method= RequestMethod.POST)
+    public  @ResponseBody void addTopicGroupUserREST(@RequestBody TopicGroupRequest request)
+    {
+    	addTopicGroupUser(null, request);
+    }
+    @RequestMapping(value = "/IMServer/addCaseGroupUser", method= RequestMethod.POST)
+    public  @ResponseBody void addCaseGroupUserREST(@RequestBody TopicGroupRequest request)
+    {
+    	addCaseGroupUser(null, request);
+    }
+    @RequestMapping(value = "/IMServer/addFileGroupUser", method= RequestMethod.POST)
+    public  @ResponseBody void addFileGroupUserREST(@RequestBody TopicGroupRequest request)
+    {
+    	addFileGroupUser(null, request);
+    }    
+    //用来为已经存在的一个讨论组踢人。
+    public boolean removeTopicGroupUser(SimpMessageHeaderAccessor accessor,TopicGroupRequest request)
+    {
+    	request.setUserList(accountMgr.getValidatedUsers(request.getUserList()));
+    	request.setOperatorId(sessionMgr.getOperatorName(accessor));
+    	TopicGroup newobj = null;
+    	if((newobj=topicGroupService.removeUsers(request))==null)
+    	{
+    		//替用户失败。
+    		return false; 
+    	}
+    	if(request.getUserList().size()==0)
+    	{
+    		return false;
+    	}    	
+    	{
+    		//先清理本地从session缓存中取消订阅。
+    		sessionMgr.unRegisterStompDest(IMConstants.destDiscuss +"/"+request.getTopicId(), request.getUserList());
+
+    	}
+    	TopicGroupEvent evt = new TopicGroupEvent();
+    	evt.setEvtype(IMConstants.topicKickNotify);
+    	evt.setTopicId(newobj.getId().toHexString());
+    	evt.setFounderID(newobj.getCreator());
+    	evt.setOperatorId(request.getOperatorId());
+    	evt.setUserList(request.getUserList());
+    	//服务器端unsubscribe
+    	unifyMsgService.removeUserDiscussGroupIds(evt.getUserList(), evt.getTopicId());
+		
+    	//通知群内的用户， 某些用户被踢掉了。
+    	String destination = IMConstants.destDiscuss +"/"+evt.getTopicId();
+        messagingTemplate.convertAndSend(destination, evt); 
+        //通知被踢掉的用户被踢用户， unsbscribe
+        evt.setEvtype(IMConstants.topicKick);
+    	for (String user: request.getUserList())
+    	{
+    		String dest = IMConstants.destNotify +"/"+user;
+    		try{
+    			messagingTemplate.convertAndSend(dest, evt);
+    		}catch(Exception e)
+    		{
+    			System.out.println(e);
+    		}
+    	}
+		//再通知其他服务器做踢人后的服务器端的清理资源工作。 
+    	evt.setTopicName(destination);
+		messagingTemplate.convertAndSend(IMConstants.IMServersBroadCastMsg, evt);     	
+        return true;
+    } 
+    @MessageMapping("/removeDiscussGroupUser")
+    public boolean removeDicussGroupUser(SimpMessageHeaderAccessor accessor,TopicGroupRequest request)
+    {
+    	request.setTopicType(IMConstants.typeIM);
+    	return removeTopicGroupUser(accessor, request);
+    }
+    @MessageMapping("/removeCaseGroupUser")
+    public boolean removeCaseGroupUser(SimpMessageHeaderAccessor accessor,TopicGroupRequest request)
+    {
+    	request.setTopicType(IMConstants.typeCaseSubcriber);
+    	return removeTopicGroupUser(accessor, request);
+    }
+    @MessageMapping("/removeFileGroupUser")
+    public boolean removeFileGroupUser(SimpMessageHeaderAccessor accessor,TopicGroupRequest request)
+    {
+    	request.setTopicType(IMConstants.typeFileSubscriber);
+    	return removeTopicGroupUser(accessor, request);
+    }    
+    @RequestMapping(value = "/IMServer/removeDiscussGroupUser", method= RequestMethod.POST)
+    public  @ResponseBody boolean removeTopicGroupUserREST(@RequestBody TopicGroupRequest request)
+    {
+    	
+    	return removeTopicGroupUser(null, request);
+    }      
+    @RequestMapping(value = "/IMServer/removeCaseGroupUser", method= RequestMethod.POST)
+    public  @ResponseBody boolean removeCaseGroupUserREST(@RequestBody TopicGroupRequest request)
+    {
+    	
+    	return removeCaseGroupUser(null, request);
+    } 
+    @RequestMapping(value = "/IMServer/removeFileGroupUser", method= RequestMethod.POST)
+    public  @ResponseBody boolean removeFileGroupUserREST(@RequestBody TopicGroupRequest request)
+    {
+    	
+    	return removeFileGroupUser(null, request);
+    }     
+}

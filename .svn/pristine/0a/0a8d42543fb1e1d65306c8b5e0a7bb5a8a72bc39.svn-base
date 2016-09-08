@@ -1,0 +1,143 @@
+//created by zhang jian xin 2016 @IBM
+package com.ibm.cloud.im.exit.service;
+
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.Iterator;
+import java.util.List;
+import java.util.Map;
+
+import org.apache.commons.logging.Log;
+import org.apache.commons.logging.LogFactory;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.stereotype.Service;
+
+//外部接口类
+//检查用户有效性，  
+//密码校验
+//其他与账号有关的外部服务
+@Service
+public class UserAccountsMgr {
+	public final static Log logger = LogFactory.getLog(UserAccountsMgr.class); 
+	
+	@Value("${IMServer.testAccounts}")
+	String testAccounts;
+	
+	Map<String, String> accounts;
+	boolean initialized=false;
+	
+	public UserAccountsMgr()
+	{
+		accounts= new HashMap<String, String>();
+	}
+	/**
+	 * 到LDAP里验证用户ID的有效性， 
+	 * @param userIds
+	 * @return 返回有效的用户
+	 */
+	public List <String> getValidatedLdapUsers(List <String> userIds)
+	{
+		return userIds;
+	}
+	/**
+	 * 认证用户
+	 * @param userId
+	 * @param token
+	 * @return  认证是否成功
+	 */
+	
+	public boolean checkLdapSecurity(String userId, String token)
+	{
+		return true;
+	}
+	
+	/**摘除无效用户， 需要到LDAP系统中校验是否是有效的用户。 目前只是去重。
+	 * 
+	 */
+	public List <String> getValidatedUsers(List <String> userIds)
+	{
+		if (userIds == null)
+			return null;
+		List <String> validated= new ArrayList<String>();
+		//去重
+		Collections.sort(userIds);
+		Iterator<String> iter = userIds.iterator();
+		String previousId = "";
+		while(iter.hasNext()) 			
+		{
+			String curId = iter.next();
+			if (curId.equals(previousId))
+			{
+				iter.remove();
+			}else
+			{
+				previousId = curId;
+			}
+		}
+		//验证用户有效性
+		if (testAccounts!= null && !testAccounts.isEmpty())
+		{
+			initializAccounts();
+			//配置文件里打开测试账号来这里。
+			for (String userId: userIds)
+			{
+				if (accounts.get(userId)!=null && !accounts.get(userId).isEmpty())
+				{
+					validated.add(userId);
+				}		
+			}
+		}else
+		{
+			validated = getValidatedLdapUsers(userIds);
+		}
+		return validated;
+	}
+
+	
+	/**到LDAP服务器或anywhere验证用户的Security
+	 * 目前测试阶段， 用配置文件里的。
+	 * @param userId
+	 * @param token
+	 * @return
+	 */
+	public boolean checkSecurity(String userId, String token)
+	{
+		boolean bret=true;
+		if (token==null || token.isEmpty())
+		{
+			bret=false;
+			
+		}
+		if (testAccounts!= null && !testAccounts.isEmpty())
+		{
+			initializAccounts();
+			if (!accounts.get(userId).equals(token))
+			{
+				bret=false;
+			}
+		}else
+		{
+			//正式上线来这里。
+			checkLdapSecurity(userId, token);
+		}
+		//去LDAP， 或者LTPA去检查用户token
+		return bret;
+	}
+	synchronized void initializAccounts()
+	{
+		//配置文件里打开测试账号配置来这里
+		if (!initialized)
+		{
+			String [] strings = testAccounts.split(",");
+			for (String userpwd: strings)
+			{
+				String [] userpwdArray = userpwd.split("/");
+				String userName = userpwdArray[0].trim();
+				String password = userpwdArray[1].trim();
+				accounts.put(userName, password);
+			}
+			initialized=true;
+		}		
+	}
+}

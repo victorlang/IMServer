@@ -1,0 +1,34 @@
+log4j.rootLogger=INFO,E,day,C
+
+###all log
+log4j.appender.F=org.apache.log4j.RollingFileAppender
+log4j.appender.F.File=/data/logs/IMServer.log
+log4j.appender.F.Append=true
+log4j.appender.F.Threshold =INFO
+log4j.appender.F.MaxFileSize=50MB
+log4j.appender.F.MaxBackupIndex=1000
+log4j.appender.F.layout=org.apache.log4j.PatternLayout
+log4j.appender.F.layout.ConversionPattern=%d %5p [%t] (%F\:%L) - %m%n
+
+
+log4j.appender.day=org.apache.log4j.DailyRollingFileAppender
+log4j.appender.day.DatePattern='.'yyyy-MM-dd-HH'.log'
+log4j.appender.day.File=/data/logs/IMServer.log
+log4j.appender.day.Append=true
+log4j.appender.day.layout=org.apache.log4j.PatternLayout
+log4j.appender.day.layout.ConversionPattern=%d %5p [%t] (%F\:%L) - %m%n
+
+###to console
+log4j.appender.C=org.apache.log4j.ConsoleAppender
+log4j.appender.C.layout=org.apache.log4j.PatternLayout
+log4j.appender.C.layout.ConversionPattern=%d %5p [%t] (%F\:%L) - %m%n
+
+###for error log file
+log4j.appender.E=org.apache.log4j.RollingFileAppender
+log4j.appender.E.File=/data/logs/error_IMServer.log
+log4j.appender.E.Append=true
+log4j.appender.E.Threshold =ERROR
+log4j.appender.E.MaxFileSize=50MB
+log4j.appender.E.MaxBackupIndex=1000
+log4j.appender.E.layout=org.apache.log4j.PatternLayout
+log4j.appender.E.layout.ConversionPattern=%d %5p [%t] (%F\:%L) - %m%n

@@ -1,0 +1,188 @@
+//created by zhang jian xin 2016 @IBM
+package com.ibm.cloud.im.model.data.KVStoredao;
+
+import java.util.List;
+
+import org.bson.types.ObjectId;
+import org.springframework.data.domain.Sort;
+import org.springframework.data.mongodb.core.WriteResultChecking;
+import org.springframework.data.mongodb.core.query.Criteria;
+import org.springframework.data.mongodb.core.query.Query;
+import org.springframework.data.mongodb.core.query.Update;
+import org.springframework.stereotype.Repository;
+
+import com.ibm.cloud.im.constant.IMConstants;
+import com.ibm.cloud.im.model.data.KVStore.MessageBody;
+import com.ibm.cloud.im.model.data.KVStore.TopicGroup;
+import com.ibm.cloud.im.model.rquest.MessageRequest;
+import com.ibm.cloud.im.server.utils.Utils;
+import com.mongodb.WriteResult;
+
+@Repository
+public class MessageBodyDao extends BaseDao<MessageBody>{
+	//增加一条消息
+	public MessageBody newMsg(MessageRequest request, TopicGroup topic)
+	{
+		MessageBody msg = new MessageBody();
+		msg.setContent(request.getContent());
+		msg.setOwnerId(request.getUserid());
+		if (topic!=null)
+		{
+			//务必确保topic使用前， 要用findAndModify原子操作增加过消息序号。
+			msg.setTId(topic.getId());
+			msg.setMType(msg.getMType());
+		}
+		msg.setMsgSeq(topic.getLastMsgSeq()); 
+		msg.setState(0);
+		msg.setObjectId(request.getObjectId());
+		msg.setPMsgId(null);//默认为空
+		msg.set_kidSum(0);
+		msg.setbEncrypted(request.isbEncrypted());
+		insert(msg);
+		return msg;
+	}
+	//为一条消息增加子消息（例如评论）
+	public MessageBody newMsg4Msg(MessageRequest request)
+	{
+		//查询父消息
+		Query query = new Query(Criteria.where(IMConstants._id).is(new ObjectId(request.getMsgId())));
+		Update update = new Update();
+		update.inc(IMConstants._childCount,1);
+		//以原子操作，更新父消息对象上的子消息总数值
+		MessageBody parentMsg = findModifyReturnNew(query, update);
+		MessageBody msg=null;
+		if (parentMsg !=null)
+		{
+			msg = new MessageBody();
+			msg.setObjectId(request.getObjectId());
+			msg.setContent(request.getContent());
+			msg.setOwnerId(request.getUserid());
+			//msg.setTopicId(topic.getId()); //topic为空， 不存在订阅行为
+			msg.setMsgSeq(parentMsg.get_kidSum());
+			msg.setState(0);
+			msg.setMType(IMConstants.typeCommentComment);
+			msg.setMsgSeq(parentMsg.get_kidSum());
+			msg.setParentMsgIdByStr(request.getMsgId());
+			insert(msg);
+		}
+		return msg;
+	}	
+	//删除一条消息， 假删除
+	public boolean removeMsg(MessageRequest request)
+	{
+		Update update = new Update();
+		boolean bret = false;
+		update.set(IMConstants.msgState, 1);
+		//只有owner可以删除消息。
+		Query query = new Query(Criteria.where(IMConstants._id).is(new ObjectId(request.getMsgId()))
+				.and(IMConstants.ownerId).is(request.getUserid())
+				);
+		WriteResult result = updateFirst(query, update);
+		if(result.getN()>0)
+		{
+			bret = true;
+		}
+		return bret;
+	}
+	
+	//查询消息的各种函数
+	public MessageBody lookupMsg(String msgId)
+	{
+		Query query = new Query(Criteria.where(IMConstants._id).is(new ObjectId(msgId)));
+		return findOne(query);		
+	}
+	/**
+	 * 
+	 * @param pmsgId   父消息的ObjectId
+	 * @param msgId   消息的ObjectId
+	 * @param retCount  要求的最大返回数目
+	 * @param direction  查询方向
+	 * @return  消息列表
+	 */
+	public List <MessageBody> lookupChildMsgs(String pmsgId, String msgId, int retCount,int direction)
+	{
+		//返回没有被删除的所有子评论
+		//需要在mongo里建立《parentMsgId， msgSeq》的复合索引， 
+		Query query = null;
+		List <MessageBody> result = null;
+		if (direction >0)
+		{	query = new Query(Criteria.where(IMConstants.parentMsgId).is(pmsgId)
+					.and(IMConstants._id).gte(new ObjectId(msgId))
+					//.and(IMConstants.msgSeq).gte(startCount)
+					//.and(IMConstants.state).is(0)
+					);
+			if (retCount >0)
+				query.limit(retCount);			
+			result = find(query);		
+		}
+		else
+		{
+			query = new Query(Criteria.where(IMConstants.parentMsgId).is(pmsgId)
+					.and(IMConstants._id).lte(new ObjectId(msgId))
+					//.and(IMConstants.msgSeq).lte(startCount)
+					//.and(IMConstants.state).is(0)
+					);	
+			if (retCount >0)
+				query.limit(retCount);	
+			result = find(query);
+			//逆转数据顺序
+		
+			Utils.reverseList(result);			
+		}
+		return result;			
+	}
+	/**
+	 * 
+	 * @param topicId  主题ID, 讨论组， Case,文件， 等等。
+	 * @param msgId   消息的ObjectId
+	 * @param retCount 要求的最大返回数目
+	 * @param direction 查询方向
+	 * @return 所有直接评论， 不包括子评论。
+	 */
+	public List <MessageBody> lookupTopicMsgs(String topicId, String msgId, int retCount,int direction)
+	{
+		//需要在mongo里建立《topicId， msgSeq》的复合索引， 
+		Query query = null;
+		List <MessageBody> result = null;
+		if (direction >0)
+		{	query = new Query(Criteria.where(IMConstants.topicId).is(new ObjectId(topicId))
+					.and(IMConstants._id).gte(new ObjectId(msgId))
+					//.and(IMConstants.msgSeq).gte(startCount)
+					
+					//.and(IMConstants.state).is(0)
+					);
+			query.with(new Sort(Sort.Direction.ASC,IMConstants._id));
+			if (retCount >0)
+				query.limit(retCount);			
+			result = find(query);
+		}
+		else
+		{
+			query = new Query(Criteria.where(IMConstants.topicId).is(new ObjectId(topicId))
+					.and(IMConstants._id).lte(new ObjectId(msgId))
+					//.and(IMConstants.msgSeq).lte(startCount)
+					//.and(IMConstants.state).is(0)
+					);	
+			query.with(new Sort(Sort.Direction.DESC,IMConstants._id));
+			if (retCount >0)
+				query.limit(retCount);			
+			result = find(query);
+			//逆转数据顺序
+			Utils.reverseList(result);
+			
+		}
+		return result;				
+	}
+	/**
+	 * 统计某时间后产生的新的消息
+	 */
+	public long sumMsgCount(String topicId, String msgId)
+	{
+		long ret = 0;
+		Query query = new Query(Criteria.where(IMConstants.topicId).is(new ObjectId(topicId))
+				.and(IMConstants._id).gte(new ObjectId(msgId))
+				);
+		ret = this.count(query);
+		return ret;
+	}
+}

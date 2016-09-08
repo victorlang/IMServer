@@ -1,0 +1,158 @@
+//created by zhang jian xin 2016 @IBM
+package com.ibm.cloud.im.server.service.infrastructure;
+
+import java.util.Map;
+
+import org.apache.commons.logging.Log;
+import org.apache.commons.logging.LogFactory;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.messaging.Message;
+import org.springframework.messaging.MessageChannel;
+import org.springframework.messaging.simp.stomp.StompCommand;
+import org.springframework.messaging.simp.stomp.StompHeaderAccessor;
+import org.springframework.messaging.support.ChannelInterceptorAdapter;
+import org.springframework.stereotype.Service;
+
+import com.ibm.cloud.im.constant.IMConstants;
+import com.ibm.cloud.im.exit.service.UserAccountsMgr;
+import com.ibm.cloud.im.model.data.KVStore.TopicGroup;
+import com.ibm.cloud.im.model.data.KVStore.UserData;
+import com.ibm.cloud.im.model.data.KVStoredao.TopicGroupDao;
+import com.ibm.cloud.im.server.service.business.TopicAndGroupService;
+import com.ibm.cloud.im.server.service.business.UnifyMsgService;
+
+import redis.clients.jedis.Jedis;
+
+@Service
+public class IMChannelInterceptor extends ChannelInterceptorAdapter {
+
+    @Autowired
+    SessionMgr sessionMgr;
+    
+    @Autowired
+    UserAccountsMgr accountMgr;
+    
+    @Autowired
+    TopicAndGroupService topicGroupService;
+
+    @Autowired
+    UnifyMsgService unifyMsgService;
+    
+    
+	private static Log logger = LogFactory.getLog(IMChannelInterceptor.class);
+	  public Message<?> preSend(Message<?> message, MessageChannel channel) {
+	    StompHeaderAccessor accessor = StompHeaderAccessor.wrap(message);
+	    StompCommand command = accessor.getCommand();
+	    // ...
+    	String operatorName = sessionMgr.getOperatorName(accessor);
+    	String dest = accessor.getDestination();
+    	sessionMgr.SessionHeartBeat(accessor);
+
+	    if (command.name().equalsIgnoreCase("CONNECT"))
+	    {
+	    	String  userName = accessor.getNativeHeader(IMConstants.loginName).get(0);
+	    	String  passcode = accessor.getNativeHeader(IMConstants.passcode).get(0);
+	    	String device = "pc";
+	    	if (accessor.getNativeHeader(IMConstants.device)!=null)
+	    		device = accessor.getNativeHeader(IMConstants.device).get(0);
+	    	Map<String, Object> sessionAttributes = accessor.getSessionAttributes();
+	    	sessionAttributes.put(IMConstants.loginName, userName.toLowerCase());
+	    	sessionAttributes.put(IMConstants.passcode, passcode);
+	    	sessionAttributes.put(IMConstants.device, device);
+	    	sessionAttributes.put(IMConstants.authorState, true);
+	    	accessor.setSessionAttributes(sessionAttributes);
+	    	//TODO 检查密码， 认证用户，踢掉未授权用户
+	    	if(!accountMgr.checkSecurity(userName, passcode))
+	    	{
+	    		//向云内广播警告。
+    			sessionMgr.sendErrorMsg(accessor.getSessionId(), IMConstants.errSecurity,userName );
+	    		sessionMgr.disConnectSession(accessor);
+	    		logger.debug("用户安全检查失败，关闭连接 [sessionId: " + accessor.getSessionId() +"; userName: "+ userName + " ]");
+	    	}else
+	    	{
+	    		//保护密码
+	    		sessionAttributes.put(IMConstants.passcode, "");
+	    		UserData obj = unifyMsgService.loginPunch(userName);
+	    	}
+	    	logger.debug("Connect event [sessionId: " + accessor.getSessionId() +"; userName: "+ userName + " ]");
+	    }else if (command.name().equalsIgnoreCase("UNSUBSCRIBE"))
+	    {
+	    	//TODO 开放下面这句会崩溃， 还没找到原因。不过redis里会广播继续做这个动作， 因此问题不大。 	
+	    	logger.debug("unsubscribeID:"+accessor.getSubscriptionId()+",Thread: "+ Thread.currentThread().getId());
+	    	sessionMgr.unRegisterStompDest(accessor.getSessionId(), accessor.getSubscriptionId());
+
+	    }else if  (command.name().equalsIgnoreCase("SUBSCRIBE"))
+	    {
+	    	//检查用户订阅的主题是否合法. 
+	    	///notify/userID， userId应该和operator
+	    	boolean bLegal = true;
+	    	if (dest.startsWith(IMConstants.destNotify))
+	    	{
+	    		String userName = dest.substring(dest.lastIndexOf("/")+1);
+	    		if (!userName.equalsIgnoreCase(operatorName))
+	    		{
+	    			bLegal=false;
+	    			sessionMgr.sendErrorMsg(accessor.getSessionId(), IMConstants.errIlegalSubsribeUserNotify,dest );
+		    		sessionMgr.disConnectSession(accessor);
+		    		System.out.println("1非法订阅"+dest +"，关闭连接 [sessionId: " + accessor.getSessionId() +"; userName: "+ operatorName + " ]");	    			
+	    		}
+	    		//向云内广播踢人命令。本session豁免
+	    		String device = (String) accessor.getSessionAttributes().get(IMConstants.device);
+	    		sessionMgr.SendkickUsersCmdMsg(userName, device, accessor.getSessionId());
+
+	    	}else if (dest.startsWith(IMConstants.destDiscuss) || dest.startsWith(IMConstants.destTopic))
+	    	{
+	    		String topicId = dest.substring(dest.lastIndexOf("/")+1);
+	    		TopicGroup group = topicGroupService.queryTopicGroupObj(topicId);
+	    		if (group!= null && !topicGroupService.checkTopicUser(group, operatorName)) 
+	    		{
+	    			unifyMsgService.removeUserDiscussGroupId(operatorName, topicId);	
+	    			bLegal=false;
+	    			sessionMgr.sendErrorMsg(accessor.getSessionId(), IMConstants.errIlegalSubsribeDiscussGroup,dest );
+		    		sessionMgr.disConnectSession(accessor);
+		    		System.out.println("2非法订阅"+dest+"，关闭连接 [sessionId: " + accessor.getSessionId() +"; userName: "+ operatorName + " ]");	    			
+	    		}
+	    		if(group!=null )
+	    		{
+	    			//检查是否在当前用户数据里， 如果不在加入
+	    			unifyMsgService.addGroup(operatorName, topicId, group.getTopicType(), false);
+	    		}
+	    	}else
+	    	{
+	    		bLegal=true;
+	    		//sessionMgr.disConnectSession(accessor);
+	    		logger.debug("订阅非受控主题"+dest+"，[sessionId: " + accessor.getSessionId() +"; userName: "+ operatorName + " ]");	    				    		
+	    	}
+	    	//不允许同一个session重复订阅相同的主题， 否则认为非法订阅， 服务器关闭其连接， 踢掉。
+	    	//原因1. 没必要， 客户端订阅一个就够
+	    	//原因2， 如果允许， sessionMgr模块的处理逻辑复杂度会增加。
+    		if (sessionMgr.checkRegisteredStompDest(dest,accessor.getSessionId()))
+    		{
+    			bLegal=false;
+    			sessionMgr.sendErrorMsg(accessor.getSessionId(), IMConstants.errDuplicatedSubsribe,dest );
+	    		sessionMgr.disConnectSession(accessor);
+	    		System.out.println("当前Session重复订阅相同的主题"+dest+"，关闭连接 [sessionId: " + accessor.getSessionId() +"; userName: "+ operatorName + " ]");	    			
+    		}	    	
+	    	if (bLegal)
+	    	{
+	    		//把订阅的主题记录到 sessionMgr
+		    	//如果是合法订阅， 向Redis转发订阅
+		    	//if (count ==1)
+		    	sessionMgr.registerStompDest(dest, accessor.getSessionId(), accessor.getSubscriptionId(), channel);
+
+	    	}
+	    	
+	    }else if  (command.name().equalsIgnoreCase("SEND"))
+	    {
+	    	boolean bLegal = true;
+	    	//检查用户发送是否合法. 
+	    	///notify/userID， userId应该和operator
+	    	logger.debug("SEND event [sessionId: " + accessor.getSessionId() +"; userName: "+ operatorName + " ]");
+	    	
+	    }else if (command.name().equalsIgnoreCase("DISCONNECT")){
+	    	logger.debug("DISCONNECT event [sessionId: " + accessor.getSessionId() +"; userName: "+ operatorName + " ]");
+	    	sessionMgr.disConnectSession(accessor,false);
+	  	}
+	    return message;
+	  }
+}

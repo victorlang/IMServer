@@ -1,0 +1,33 @@
+//created by zhang jian xin 2016 @IBM
+package com.ibm.cloud.im.model.response;
+
+public class DiscussGroupInfo {
+		String groupId;
+		String groupName;
+		long type;
+		public long getType() {
+			return type;
+		}
+		public void setType(long type) {
+			this.type = type;
+		}
+		long lastMsgTime;
+		public String getGroupId() {
+			return groupId;
+		}
+		public void setGroupId(String groupId) {
+			this.groupId = groupId;
+		}
+		public String getGroupName() {
+			return groupName;
+		}
+		public void setGroupName(String groupName) {
+			this.groupName = groupName;
+		}
+		public long getLastMsgTime() {
+			return lastMsgTime;
+		}
+		public void setLastMsgTime(long lastMsgTime) {
+			this.lastMsgTime = lastMsgTime;
+		}
+}

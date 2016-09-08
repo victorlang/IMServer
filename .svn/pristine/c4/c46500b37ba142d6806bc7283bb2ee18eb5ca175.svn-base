@@ -1,0 +1,125 @@
+//created by zhang jian xin 2016 @IBM
+package com.ibm.cloud.im.constant;
+
+import org.bson.types.ObjectId;
+
+public class IMConstants {
+
+	//张建鑫remind以下定义mongo里的字段名的字符串， 务必简短。
+	public static final String _id = "_id";
+	public static final String state = "s";
+	public static final String userList = "u";
+	public static final String lastMsgSeqence = "ls";
+	public static final String lastMsgTime = "lt";
+	public static final String modifyTime = "m";
+	//public static final String createTime = "_createTime";
+	public static final String topicName = "t";
+	public static final String objectId ="o";
+	public static final String founderId = "f";
+	public static final String topicType = "p";
+	public static final String shareMsg = "sh";
+	
+	//MessageBody
+	public static final String topicId="ti";//"tId";//消息所属主题的Id
+	
+	public static final String msgType="mt";//"mType";//消息类型
+		
+	public static final String _childCount="ks";//"_kidSum";//子评论总数量
+	
+	public static final String ownerId="ow";//"owner";//创建者的userId
+	
+	public static final String content="co";//"content";//消息内容
+	
+	public static final String msgSeq="ms";//"msgSeq";//同主题内的消息序号
+		
+	public static final String msgState="s";//"state";
+	public static final String msgUnread="u";
+	public static final String msgSender="su";
+	public static final String mailTime = "mt";
+	public static final String isEncrypted = "En";
+	
+	public static final String parentMsgId="pI";//"pMsgId";	
+	
+	public static final String userId="_id";
+	public static final String discussGroupList = "l";
+	public static final String caseGroupList = "c";
+	public static final String fileGroupList = "f";
+	public static final String lastLogOffTime = "t";
+	public static final String lastLogInTime = "I";
+	
+	//TopicGroup event type
+	public static final String topicRename="rename";
+	public static final String topicNew="new";
+	public static final String topicAdd= "add";
+	public static final String topicAddNotify= "addNotify";
+	public static final String topicKick= "kick";
+	public static final String topicKickNotify= "kickNotify";
+	public static final String topicDestroy= "destroy";
+	
+	
+	//destination
+	public static final String destNotify = "/notify"; 
+	public static final String destDiscuss ="/discuss"; 
+	public static final String destTopic = "/topic"; 
+	public static final String destIMServer = "/IMServer"; 
+	public static final String destError = "/error"; 
+	
+	//认证 session有关
+	public static final String loginName = "login";
+	public static final String passcode = "securitytoken";
+	public static final String authorState = "authorState";
+	public static final String lastKickTime = "lastKickTime";
+	public static final String userTopicId = "userTopicId";
+	//消息或的类型, 使用不同bit位标示
+	public static final long typeIM=0;//即时聊天消息类型ID, 讨论组Topic类型ID
+	public static final long typeNotify=1;//通知消息类型ID
+	public static final long typeCaseSubcriber = 2;//对case的订阅事件消息类型ID，讨论组Topic类型ID
+	public static final long typeFileSubscriber = 4;//对文件的评论消息类型ID,讨论组Topic类型ID
+	public static final long typePersonalMail = 8; //对用户个人消息的订阅。
+	//以下不需要有群组管理的类型
+	public static final long typeCommentComment=16;//评论的评论消息类型ID
+	public static final long typeFileComment=32;//文件评论消息类型ID
+	public static final long typeCaseComment=64;//对事项的评论消息类型ID
+	public static final long typeTaskComment=128;//对任务的评论消息类型ID
+	public static final long typeOtherObjectSubescriber = 2048;//对任意类型对象订阅消息的ID, 讨论组Topic类型ID
+	public static final long typeOthers=4096;//其他类型消息
+	
+	public static final int defaultLookupMsgRetCount = 3;//返回三条消息
+	public static final int defaultLookupMsgDirection = -1; //倒查
+	public static final long defaultLookupMsgStartCount = 4611686018427387904L;
+	
+	//事件名字的定义
+	public static final String IMServersBroadCastMsg = "IMServersBroadCastMsg";
+	public static final String lookupMsgRspEvt = "lookupMsgRspEvt";
+	public static final String lookupChildMsgRspEvt = "lookupChildMsgRspEvt";
+	public static final String removeMsgRspEvt = "removeMsgRspEvt";
+	public static final String IMNewMsgEvent = "IMNewMsgEvent";
+	public static final String IMNewChildMsgEvent = "IMNewChildMsgEvent";
+	public static final String IMNewMailEvent = "IMNewMailEvent";
+	public static final String IMLookupMailEvent = "IMLookupMailEvent";
+	public static final String SubscribeEvent = "SubscribeEvent";
+	public static final String TopicGroupEvent = "TopicGroupEvent";
+	public static final String queryDiscussGroupResponse = "qdisgrsp";
+	public static final String queryMailResponse ="queryMailResponse";
+	public static final String queryTopicGroupRsp ="queryTopicGroupRsp";
+	
+	//服务器发给用户的的errorCode
+	public static final int errIlegalSubsribeUserNotify =1; //服务器判断为非法订阅别的用户的notify消息
+	public static final int errIlegalSubsribeDiscussGroup =2; //服务器判断为非法订阅别的用户讨论组
+	public static final int errDuplicatedSubsribe =3; //服务器判断为重复订阅同一个destination
+	public static final int errUnsubsribedByServer =4; //服务器主动关闭客户端订阅
+	public static final int errSecurity =5; //有人在用错误的账号密码尝试登陆你的账户
+	public static final int errOtherLogin =6; //有别的连接把当前连接踢掉了。
+	
+	//广播命令字段String cmd = "{'cmd':'kickusers'"+"'userNmae':'"+ userName +"'}";
+	public static final String command= "cmd";
+	public static final String kickUserCmd = "kick";
+	public static final String userName="userName";
+	public static final String except4Session="except";
+	
+	//collection names
+	public static final String cnMailBody="MailBody";
+	public static final String cnMessageBody="MessageBody";
+	public static final String cnTopicGroup="TopicGroup";
+	public static final String cnUsers="Users";
+}

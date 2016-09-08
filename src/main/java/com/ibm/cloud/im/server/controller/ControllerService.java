@@ -1,0 +1,520 @@
+//created by zhang jian xin 2016 @IBM
+package com.ibm.cloud.im.server.controller;
+
+import java.util.ArrayList;
+import java.util.Date;
+import java.util.List;
+
+import org.apache.commons.lang.StringUtils;
+import org.apache.commons.logging.Log;
+import org.apache.commons.logging.LogFactory;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.stereotype.Service;
+
+import com.ibm.cloud.im.constant.IMConstants;
+import com.ibm.cloud.im.exit.service.UserAccountsMgr;
+import com.ibm.cloud.im.model.data.KVStore.MailBody;
+import com.ibm.cloud.im.model.data.KVStore.MessageBody;
+import com.ibm.cloud.im.model.data.KVStore.TopicGroup;
+import com.ibm.cloud.im.model.data.KVStore.UserData;
+import com.ibm.cloud.im.model.response.DiscussGroupInfo;
+import com.ibm.cloud.im.model.response.IMNewMsgEvent;
+import com.ibm.cloud.im.model.response.MsgRespondBody;
+import com.ibm.cloud.im.model.response.OperateMsgsResponse;
+import com.ibm.cloud.im.model.response.QueryDiscussGroupsResponse;
+import com.ibm.cloud.im.model.response.QueryMailResponse;
+import com.ibm.cloud.im.model.response.SubscribeInitEvent;
+import com.ibm.cloud.im.model.response.TopicGroupEvent;
+import com.ibm.cloud.im.model.rquest.MessageRequest;
+import com.ibm.cloud.im.model.rquest.SendMailRequest;
+import com.ibm.cloud.im.model.rquest.SubScriptionRequest;
+import com.ibm.cloud.im.model.rquest.TopicGroupRequest;
+import com.ibm.cloud.im.server.service.business.MailDataService;
+import com.ibm.cloud.im.server.service.business.MsgDataService;
+import com.ibm.cloud.im.server.service.business.TopicAndGroupService;
+import com.ibm.cloud.im.server.service.business.UnifyMsgService;
+import com.ibm.cloud.im.server.service.infrastructure.SessionMgr;
+import com.ibm.cloud.im.server.utils.Utils;
+
+@Service
+public class ControllerService {
+	private static Log logger = LogFactory.getLog(ControllerService.class);
+	@Autowired
+	private UnifyMsgService messagingTemplate;
+	
+    
+    @Autowired
+    SessionMgr sessionMgr;
+    
+    @Autowired
+    UserAccountsMgr accountMgr;
+    
+    @Autowired
+    private TopicAndGroupService topicGroupService;
+    
+    @Autowired
+    private UnifyMsgService unifyMsgService;
+    
+    @Autowired
+    private MsgDataService msgDataService;
+    @Autowired
+    private MailDataService mailDataService;    
+
+    public void createGroup(TopicGroupRequest request/*,@AuthenticationPrincipal User op*/)
+    {
+    	//检查过滤用户组
+    	request.setUserList(accountMgr.getValidatedUsers(request.getUserList()));
+    	//存储
+    	TopicGroup newobj = topicGroupService.createTopicAndGroup(request);
+    	TopicGroupEvent evt = new TopicGroupEvent();
+    	evt.setFounderID(newobj.getCreator());
+    	evt.setTopicId(newobj.getId().toHexString());
+    	evt.setEvtype(IMConstants.topicNew);
+        evt.setTopicName(newobj.getTopicName());   
+        evt.setOperatorId(request.getOperatorId());
+        evt.setTopicType(request.getTopicType());
+    	//通知相关用户加新组的事件
+		 List <String>  involvedUsers = topicGroupService.getTopicUsersList(newobj.getId().toHexString());
+		 		  
+        if (involvedUsers.size()>0)
+        {
+            unifyMsgService.addGroup(involvedUsers, evt.getTopicId(), evt.getTopicType(),true);        		
+        }
+        evt.setUserList(involvedUsers);
+        //通知每个用户个人消息队列，让客户端发起对新主题的订阅。 
+    	for (String user: involvedUsers)
+    	{
+    		String dest = IMConstants.destNotify +"/"+user;
+    		try{
+    			messagingTemplate.convertAndSend(dest, evt);
+    		}catch(Exception e)
+    		{
+    			logger.fatal(e);
+    			System.out.println(e);
+    		}
+    	}
+    	evt.getTopicId();
+    } 
+    public void updateTopicName(TopicGroupRequest request)
+    {
+    	TopicGroup newobj = topicGroupService.updateTopicName(request);
+     	TopicGroupEvent evt = new TopicGroupEvent(newobj.getId().toHexString(),newobj.getCreator(), IMConstants.topicRename);
+     	evt.setTopicName(newobj.getTopicName()); 
+     	evt.setOperatorId(request.getOperatorId());
+     	evt.setTopicId(newobj.getId().toHexString());
+     	evt.setEvtype(IMConstants.topicRename);
+    	//通知相关用户加新组的事件
+     	//不需要通知每个用户， 只需要通知在线的订阅该主题的用户即可
+     	/*List <String> userlist = newobj.getUserList();
+    	for (String user: userlist)
+    	{
+    		String dest = "/discuss/"+user;
+    		try{
+    			messagingTemplate.convertAndSend(dest, evt);
+    		}catch(Exception e)
+    		{
+    			logger.fatal(e);
+    		}
+    	}*/
+    	String destination = IMConstants.destDiscuss +"/"+evt.getTopicId();
+        messagingTemplate.convertAndSend(destination, evt);          	
+    }
+    public void removeTopic(TopicGroupRequest request)
+    {
+       	//存储
+    	TopicGroup newobj = topicGroupService.removeTopic(request);
+    	TopicGroupEvent evt = new TopicGroupEvent();
+    	evt.setFounderID(newobj.getCreator());
+    	evt.setTopicId(newobj.getId().toHexString());
+    	evt.setOperatorId(request.getOperatorId());
+    	evt.setEvtype(IMConstants.topicDestroy);
+        evt.setTopicName(newobj.getTopicName());
+		 List <String>  involvedUsers = topicGroupService.getTopicUsersList(request.getTopicId());
+    	unifyMsgService.removeGroup(involvedUsers, evt.getTopicId(), newobj.getTopicType());
+    	//通知相关用户加新组的事件
+        /*List <String> userlist = newobj.getUserList();
+    	for (String user: userlist)
+    	{
+    		String dest = "/notify/"+user;
+    		try{
+    			messagingTemplate.convertAndSend(dest, evt);
+    		}catch(Exception e)
+    		{
+    			
+    		}
+    	} */
+    	String destination = IMConstants.destDiscuss +"/"+evt.getTopicId();
+        messagingTemplate.convertAndSend(destination, evt);     	
+    }    
+    public void addTopicGroupUser(TopicGroupRequest request)
+    {
+    	//存储
+    	TopicGroup newobj = null;
+    	if(request.getUserList().size()==0 || request.getTopicId().isEmpty())
+    	{
+    		return;
+    	}    	
+    	if  ((newobj=topicGroupService.addUsers(request))==null)
+    		return;
+    	if(request.getUserList().size()==0)
+    	{
+    		return;
+    	}
+    	String topicId = newobj.getId().toHexString();
+    	unifyMsgService.addGroup(request.getUserList(), topicId, newobj.getTopicType(),true);
+    	//通知相关用户加新组的事件
+    	//List <String> oldUserList = topicGroupService.queryTopicGroupObj(request).getUserList();
+    	TopicGroupEvent evt = new TopicGroupEvent();
+    	evt.setTopicId(topicId);
+    	evt.setFounderID(newobj.getCreator());
+    	evt.setOperatorId(request.getOperatorId());
+    	evt.setUserList(request.getUserList());
+    	evt.setTopicName(newobj.getTopicName());
+    	evt.setEvtype(IMConstants.topicAddNotify);
+    	//通知群内的用户， 某些用户被加到讨论组里。
+    	String destination = IMConstants.destDiscuss +"/"+topicId;
+        messagingTemplate.convertAndSend(destination, evt);  
+        //通知新加入的用户， 让他们主动发起订阅。
+        evt.setEvtype(IMConstants.topicAdd);
+    	for (String user: request.getUserList())
+    	{
+    		String dest = IMConstants.destNotify +"/"+user;
+    		try{
+    			messagingTemplate.convertAndSend(dest, evt);
+    		}catch(Exception e)
+    		{
+    			System.out.println(e);
+    		}
+    	} 
+    	//处理新加入用户的个人订阅表    	
+    } 
+    public void removeTopicGroupUser(TopicGroupRequest request)
+    {
+    	TopicGroup newobj = null;
+    	if((newobj=topicGroupService.removeUsers(request))==null)
+    	{
+    		//替用户失败。
+    		newobj = topicGroupService.queryTopicGroupObj(request.getTopicId());
+    		if (newobj != null)
+    			unifyMsgService.removeGroup(request.getUserList(), request.getTopicId(), newobj.getTopicType());
+    		return; 
+    	}
+    	if(request.getUserList().size()==0)
+    	{
+    		unifyMsgService.removeGroup(request.getUserList(), request.getTopicId(), newobj.getTopicType());
+    		return;
+    	}    	
+    	{
+    		//先清理本地从session缓存中取消订阅。
+    		sessionMgr.unRegisterStompDest(IMConstants.destDiscuss +"/"+request.getTopicId(), request.getUserList());
+
+    	}
+    	TopicGroupEvent evt = new TopicGroupEvent();
+    	evt.setEvtype(IMConstants.topicKickNotify);
+    	evt.setTopicId(newobj.getId().toHexString());
+    	evt.setFounderID(newobj.getCreator());
+    	evt.setOperatorId(request.getOperatorId());
+    	evt.setUserList(request.getUserList());
+    	//服务器端unsubscribe
+    	unifyMsgService.removeGroup(evt.getUserList(), evt.getTopicId(), newobj.getTopicType());
+		
+    	//通知群内的用户， 某些用户被踢掉了。
+    	String destination = IMConstants.destDiscuss +"/"+evt.getTopicId();
+        messagingTemplate.convertAndSend(destination, evt); 
+        //通知被踢掉的用户被踢用户， unsbscribe
+        evt.setEvtype(IMConstants.topicKick);
+    	for (String user: request.getUserList())
+    	{
+    		String dest = IMConstants.destNotify +"/"+user;
+    		try{
+    			messagingTemplate.convertAndSend(dest, evt);
+    		}catch(Exception e)
+    		{
+    			System.out.println(e);
+    		}
+    	}
+		//再通知其他服务器做踢人后的服务器端的清理资源工作。 
+    	evt.setTopicName(destination);
+		messagingTemplate.convertAndSend(IMConstants.IMServersBroadCastMsg, evt);      	
+    }
+    public void sendQueryTopicResponse(List<TopicGroup> list, String userId)
+    {
+    	QueryDiscussGroupsResponse evt = new QueryDiscussGroupsResponse();
+    	evt.setEventName(IMConstants.queryTopicGroupRsp);
+    	List <String> userIds = new ArrayList<String>();
+    	userIds.add(userId);
+    	for (TopicGroup obj : list)
+    	{
+    		DiscussGroupInfo info = new DiscussGroupInfo();
+    		//检查用户有无在这个讨论组里的权限
+    		boolean bAccesible = topicGroupService.checkTopicUser(obj, userId);
+    		info.setbAccesible(bAccesible);
+    		if (bAccesible==false)
+    		{
+    			unifyMsgService.removeGroup(userIds, obj.getId().toHexString(), obj.getTopicType());
+    		}
+    		info.copyObj(obj);
+    		evt.addGroup(info);
+    	}
+		String destination = IMConstants.destNotify+"/"+userId;
+		messagingTemplate.convertAndSend(destination, evt);    	
+    }
+    public void queryTopicObjsByName(TopicGroupRequest request)
+    {
+    	List<TopicGroup> list = topicGroupService.queryTopicgroupObjByName(request);
+    	sendQueryTopicResponse(list,request.getOperatorId());    	
+    }
+    public void queryTopicObjsByObjectId(TopicGroupRequest request)
+    {
+    	List<TopicGroup> list = topicGroupService.queryTopicgroupObjByObjectId(request);
+    	sendQueryTopicResponse(list, request.getOperatorId());   	
+    }
+    public void queryTopicObjsByTopicId(TopicGroupRequest request)
+    {
+    	List<TopicGroup> list = topicGroupService.queryTopicgroupObjByTopicId(request);
+    	sendQueryTopicResponse(list, request.getOperatorId());   	
+    }    
+    public void queryUserBookedDiscussGroup(MessageRequest request)
+    {
+    	QueryDiscussGroupsResponse evt = new QueryDiscussGroupsResponse();
+    	String userId = request.getUserid();
+    	List<DiscussGroupInfo> list = unifyMsgService.queryUserDiscussGroups(userId);
+    	evt.setDiscussGroups(list);
+    	list = unifyMsgService.queryUserCaseGroups(userId);
+    	evt.setCaseGroups(list);
+    	list = unifyMsgService.queryUserFileGroups(userId);
+    	evt.setFileGroups(list);
+		String destination = IMConstants.destNotify+"/"+request.getUserid();
+		messagingTemplate.convertAndSend(destination, evt);    	
+    }  
+	public void subScribeInitWithoutParameter(SubScriptionRequest req)
+	{
+		String topicId= req.getTopicId();
+		String dest=req.getDest();
+		String operator=req.getOperator();
+    	SubscribeInitEvent evt = new SubscribeInitEvent();
+    	evt.setTopicId(dest);
+			TopicGroup topicGroup = topicGroupService.queryTopicGroupObjFromDb(topicId);
+    		MessageRequest request = new MessageRequest();
+    		request.setTopicId(topicId);
+    		//默认返回最新的三条
+    		//这之前由于已经在IMChannelInterceptor上订阅过了， 因此不可能有消息丢失， 
+    		//但后续的通知消息里可能有重复通知的消息， 由前端进行过滤即可。服务器不做处理
+    		//
+    		request.setMsgId(Utils.makeFarFutureIdString());
+    		request.setMsgRetCnt(1);
+    		 List <MessageBody> msgs = msgDataService.lookupTopicMessages(request);
+    		 //查询上次logout以后产生的消息数量。
+    		 UserData obj = unifyMsgService.queryUserDataObj(operator);
+    		 long time = obj.getLastLogOffTime()-2000;
+    		 long count = msgDataService.sumMsgCount(topicId, Utils.convertTime2Id(time));
+    		 evt.setMsgCountSinceLastLogoff(count);
+    		 evt.setMsgTotalCountInGroup(topicGroup.getLastMsgSeq());
+    		 evt.setMsgs(msgs);	
+    		 evt.setTopicType(topicGroup.getTopicType());
+    		 List <String>  involvedUsers = topicGroupService.getTopicUsersList(topicId);
+    		 evt.setUsers(involvedUsers);
+    		 evt.setTopicName(topicGroup.getTopicName());
+    		 evt.setTopicOwner(topicGroup.getCreator());
+    		 evt.setTopicId(topicId);
+     		String notifyDest = IMConstants.destNotify +"/"+operator;
+     		try{
+     			messagingTemplate.convertAndSend(notifyDest, evt);
+     		}catch(Exception e)
+     		{
+     			logger.fatal(e);
+     			System.out.println(e);
+     		}    		 
+	}  
+    public void addMsg4Msg(MessageRequest request)
+    {
+    	boolean bLegal = false;
+
+    	//检查是否是合法操作， 操作员是否是在讨论组成员列表里
+    	IMNewMsgEvent evt = new IMNewMsgEvent();
+    	MessageBody msgBody = null;
+    	//存储消息    	
+    	 if (StringUtils.isEmpty(request.getMsgId()))
+     	{
+     		//对无订阅主题的消息， 评论下的评论。
+     		msgBody= msgDataService.addMsg4Msg(request);
+     		if (msgBody != null)
+     		{
+     			bLegal=true;
+     		}
+     	}
+     	if (msgBody !=null)
+ 		{
+     		evt.setMsg(new MsgRespondBody(msgBody));
+     		String destination = IMConstants.destTopic+"/"+request.getMsgId();
+     		messagingTemplate.convertAndSend(destination, evt);
+ 		}
+ 		if (!bLegal){
+ 			logger.fatal("ilegal add child message by "+request.getUserid());
+ 		}    	
+    }
+    public void publish2Group(MessageRequest request)
+    {
+    	boolean bLegal = false;
+    	//检查是否是合法操作， 操作员是否是在讨论组成员列表里
+    	IMNewMsgEvent evt = new IMNewMsgEvent();
+    	MessageBody msgBody = null;
+    	String topicId = request.getTopicId();
+    	//存储消息
+    	if (!StringUtils.isEmpty(topicId))
+    	{
+    		//对有订阅主题的消息， 讨论组， case, 文件
+    		//三级缓存检查合法访问。
+        	bLegal = topicGroupService.checkTopicUser(topicId, request.getUserid());
+        	if (bLegal)
+        	{
+        		msgBody = msgDataService.addTopicMessage(request);
+        		if (msgBody != null)
+        		{
+            		evt.setTopicId(topicId);
+            		bLegal=true;
+        		}
+        	}
+    	}else
+    	{
+    		bLegal =  false;
+    	}
+    	if (msgBody !=null)
+		{
+    		evt.setMsg(new MsgRespondBody(msgBody));
+    		String destination = IMConstants.destDiscuss+"/"+request.getTopicId();
+    		messagingTemplate.convertAndSend(destination, evt);
+		}
+		if (!bLegal){
+			logger.fatal("ilegal sending message by "+request.getUserid());
+		}
+    } 
+    public void queryGroupMessage(MessageRequest request)
+    {
+    	boolean bLegal = false;
+    	OperateMsgsResponse evt = new OperateMsgsResponse();
+    	String topicId = request.getTopicId();
+		 evt.setTopicId(request.getTopicId()); 
+    	//参数校验
+    	if (StringUtils.isEmpty(request.getMsgId()))
+    	{
+    		return;
+    	}
+    	//需要做安全验证， 和加人踢人一样处理
+    	bLegal = topicGroupService.checkTopicUser(topicId, request.getUserid());
+    	if (bLegal)
+    	{
+    		List <MessageBody> msgs = msgDataService.lookupTopicMessages(request);
+   		 	evt.putkvStoreMsgs(msgs);	
+    	}  
+		String destination = IMConstants.destNotify+"/"+request.getUserid();
+		messagingTemplate.convertAndSend(destination, evt);    	    	
+    }    
+    public void delGroupMessage(MessageRequest request)
+    {
+    	boolean bLegal;
+    	OperateMsgsResponse evt = new OperateMsgsResponse();
+    	String topicId = request.getTopicId();
+		 evt.setTopicId(request.getTopicId()); 
+    	//参数校验
+    	if (StringUtils.isEmpty(request.getMsgId()))
+    	{
+    		bLegal=false;
+    	}
+    	//需要做安全验证， 和加人踢人一样处理
+    	bLegal = topicGroupService.checkTopicUser(topicId, request.getUserid());
+    	if (bLegal)
+    	{
+    		if(msgDataService.removeMessageById(request))
+    		{
+    			//发在线通知消息
+    			evt.setEventName(IMConstants.removeMsgRspEvt);
+    			evt.putDeleteMsg(request.getMsgId());
+        		String destination = IMConstants.destDiscuss+"/"+request.getTopicId();
+        		messagingTemplate.convertAndSend(destination, evt);			
+    		}
+    		
+    	}     	
+    }
+    public void queryUserMails(MessageRequest request)
+    {
+    	QueryMailResponse evt = new QueryMailResponse();
+    	String userId = request.getUserid();
+		 UserData obj = unifyMsgService.queryUserDataObj(request.getUserid());
+		 long timestamp = obj.getLastLogOffTime()-2000;
+    	 List<MailBody> sinceLogofflist = mailDataService.lookupMails(userId, timestamp, 200, 1, true);
+    	 //只查询一百天内的未读邮件
+    	 timestamp = (new Date()).getTime()-1000*60*60*24*100;
+    	 List<MailBody> unreadList = mailDataService.lookupMails(userId, timestamp, 200, 1, false);
+    	 evt.setMailSinceLastLogOff(sinceLogofflist);
+    	 evt.setMailUnread(unreadList);
+		String destination = IMConstants.destNotify+"/"+request.getUserid();
+		messagingTemplate.convertAndSend(destination, evt);    	
+    } 
+    public void sendMail2User(SendMailRequest request)
+    {
+    	mailDataService.sendMails(request);
+    } 
+    public void markReadedMail(SendMailRequest request)
+    {
+    	mailDataService.readMail(request);
+    } 
+    public void removeMail(SendMailRequest request)
+    {
+    	mailDataService.removeMailById(request);
+    }
+    public void publishChildComment(MessageRequest request)
+    {
+    	boolean bLegal = false;
+    	//检查是否是合法操作， 操作员是否是在讨论组成员列表里
+    	IMNewMsgEvent evt = new IMNewMsgEvent();
+    	MessageBody msgBody = null;
+    	String topicId = request.getTopicId();
+       	if (bLegal)
+       	{
+       		msgBody = msgDataService.addMsg4Msg(request);
+       		if (msgBody != null)
+       		{
+           		evt.setTopicId(topicId);
+           		bLegal=true;
+       		}
+       	}
+    	if (msgBody !=null && !StringUtils.isEmpty(topicId))
+		{
+    		evt.setMsg(new MsgRespondBody(msgBody));
+    		evt.setEventName(IMConstants.IMNewChildMsgEvent);
+    		String destination = IMConstants.destDiscuss+"/"+request.getTopicId();
+    		messagingTemplate.convertAndSend(destination, evt);
+		}
+		if (!bLegal){
+			logger.fatal("ilegal sending message by "+request.getUserid());
+		}
+    }
+    public void queryChildMessages(MessageRequest request)
+    {
+    	OperateMsgsResponse evt = new OperateMsgsResponse();
+		evt.setTopicId(request.getTopicId()); 
+    	List <MessageBody> msgs = msgDataService.lookupTopicMessages(request);
+   		evt.putkvStoreMsgs(msgs);
+   		if (msgs.size()>0)
+		{
+    		evt.setEventName(IMConstants.lookupChildMsgRspEvt);
+   			String destination = IMConstants.destNotify+"/"+request.getUserid();
+   			messagingTemplate.convertAndSend(destination, evt);    	    	
+		}
+    }      
+    public void addRefTopicGroupIds(TopicGroupRequest request)
+    {
+    	if(topicGroupService.checkTopicGroupUser(request.getTopicId(),request.getOperatorId()))
+    	{
+    		topicGroupService.addRefTopicGroup(request);
+    	}
+    }
+    public void removeRefTopicGroupIds(TopicGroupRequest request)
+    {
+    	if(topicGroupService.checkTopicGroupUser(request.getTopicId(),request.getOperatorId()))
+    	{
+    		topicGroupService.removeRefTopicGroup(request);
+    	}
+    }
+}

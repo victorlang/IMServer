@@ -1,0 +1,109 @@
+//created by zhang jian xin 2016 @IBM
+package com.ibm.cloud.im.config;
+
+import java.util.List;
+
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.context.annotation.Scope;
+import org.springframework.messaging.converter.MessageConverter;
+import org.springframework.messaging.handler.invocation.HandlerMethodArgumentResolver;
+import org.springframework.messaging.handler.invocation.HandlerMethodReturnValueHandler;
+import org.springframework.messaging.simp.broker.AbstractSubscriptionRegistry;
+import org.springframework.messaging.simp.config.ChannelRegistration;
+import org.springframework.messaging.simp.config.MessageBrokerRegistry;
+import org.springframework.messaging.support.AbstractSubscribableChannel;
+//import org.springframework.security.config.annotation.web.messaging.MessageSecurityMetadataSourceRegistry;
+import org.springframework.web.servlet.config.annotation.EnableWebMvc;
+import org.springframework.web.socket.WebSocketHandler;
+import org.springframework.web.socket.config.annotation.AbstractWebSocketMessageBrokerConfigurer;
+import org.springframework.web.socket.config.annotation.EnableWebSocketMessageBroker;
+import org.springframework.web.socket.config.annotation.StompEndpointRegistry;
+import org.springframework.web.socket.config.annotation.WebSocketMessageBrokerConfigurationSupport;
+import org.springframework.web.socket.config.annotation.WebSocketMessageBrokerConfigurer;
+import org.springframework.web.socket.config.annotation.WebSocketTransportRegistration;
+
+import com.ibm.cloud.im.constant.IMConstants;
+import com.ibm.cloud.im.server.service.business.TopicAndGroupService;
+import com.ibm.cloud.im.server.service.infrastructure.IMChannelInterceptor;
+import com.ibm.cloud.im.server.service.infrastructure.StompChannel;
+
+import redis.clients.jedis.JedisPool;
+
+@Configuration
+//@EnableWebMvc
+@EnableWebSocketMessageBroker
+public class WebSocketConfig extends WebSocketMessageBrokerConfigurationSupport implements WebSocketMessageBrokerConfigurer{
+
+	
+	@Autowired
+	IMChannelInterceptor channelInterceptor;
+	
+	@Override
+	public void configureMessageBroker(MessageBrokerRegistry config) {
+		config.enableSimpleBroker(IMConstants.destTopic,IMConstants.destNotify, IMConstants.destDiscuss, IMConstants.destError);
+		//config.setUserDestinationPrefix(userDestinationPrefix);
+		config.setApplicationDestinationPrefixes(IMConstants.destIMServer,IMConstants.destTopic,IMConstants.destNotify, IMConstants.destDiscuss,IMConstants.destError);
+	}
+
+	@Override
+	public void registerStompEndpoints(StompEndpointRegistry registry) {
+		registry.addEndpoint("/stomp")
+		.setHandshakeHandler(new HandshakeHandler())
+		.addInterceptors(new HandshakeInterceptor())
+		.withSockJS()
+		.setSessionCookieNeeded(true);
+	}
+	@Override
+	public void configureClientInboundChannel(ChannelRegistration registration) {
+	    registration.setInterceptors(channelInterceptor);
+	 }	
+    @Override
+    public void configureWebSocketTransport(WebSocketTransportRegistration registration) {
+        registration.setMessageSizeLimit(128 * 1024);
+    }	
+    //@Override
+    /*protected void configureInbound(MessageSecurityMetadataSourceRegistry messages) {
+    	//Any message without a destination (i.e. anything other that Message type of MESSAGE or SUBSCRIBE) will require the user to be authenticated
+    	messages.nullDestMatcher().authenticated()//
+    	//Anyone can subscribe to /user/queue/errors
+    	//.simpSubscribeDestMatchers("/user/queue/errors").permitAll()
+    	//Any message that has a destination starting with "/app/" will be require the user to have the role ROLE_USER
+    	.simpDestMatchers("/IMServer/**").hasRole("USER")
+    	//Any message that starts with "/user/" or "/topic/friends/" that is of type SUBSCRIBE will require ROLE_USER
+    	.simpSubscribeDestMatchers("/notify/**", "/discuss/**").hasRole("USER");
+    	//Any other message of type MESSAGE or SUBSCRIBE is rejected. Due to 6 we do not need this step, but it illustrates how one can match on specific message types
+    	//.simpTypeMatchers(MESSAGE, SUBSCRIBE).denyAll()
+    	//.anyMessage().denyAll();
+    }*/
+
+    @Override
+    public boolean configureMessageConverters(List<MessageConverter> messageConverters) {
+        return super.configureMessageConverters(messageConverters);
+    }
+
+    @Override
+    public void configureClientOutboundChannel(ChannelRegistration registration) {
+        super.configureClientOutboundChannel(registration);
+    }
+
+
+    @Override
+    public void addArgumentResolvers(List<HandlerMethodArgumentResolver> argumentResolvers) {
+        super.addArgumentResolvers(argumentResolvers);
+    }
+
+    @Override
+    public void addReturnValueHandlers(List<HandlerMethodReturnValueHandler> returnValueHandlers) {
+        super.addReturnValueHandlers(returnValueHandlers);
+    }  
+    @Bean
+    public WebSocketHandler subProtocolWebSocketHandler() {
+        return new IMSubProtocolWebSocketHandler(clientInboundChannel(), clientOutboundChannel());
+    }  
+    @Bean
+	public AbstractSubscriptionRegistry subScriptionRegistry() {
+		return new StompChannel();
+	}    
+}

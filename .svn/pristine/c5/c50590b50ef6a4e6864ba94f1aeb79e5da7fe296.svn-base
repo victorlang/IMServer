@@ -1,0 +1,136 @@
+//created by zhang jian xin 2016 @IBM
+package com.ibm.cloud.im.server.service.business;
+
+import java.util.Date;
+import java.util.List;
+
+import org.apache.commons.logging.Log;
+import org.apache.commons.logging.LogFactory;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.stereotype.Service;
+
+import com.ibm.cloud.im.constant.IMConstants;
+import com.ibm.cloud.im.model.data.KVStore.MessageBody;
+import com.ibm.cloud.im.model.data.KVStore.TopicGroup;
+import com.ibm.cloud.im.model.data.KVStoredao.MessageBodyDao;
+import com.ibm.cloud.im.model.data.KVStoredao.TopicGroupDao;
+import com.ibm.cloud.im.model.data.KVStoredao.UserDataDao;
+import com.ibm.cloud.im.model.response.TopicGroupEvent;
+import com.ibm.cloud.im.model.rquest.MessageRequest;
+
+//消息本体模块 service
+@Service
+public class MsgDataService {
+	private static Log logger = LogFactory.getLog(MsgDataService.class);
+	@Autowired
+	private UnifyMsgService messagingTemplate;
+	
+	@Autowired
+	private MessageBodyDao messageBodyHandler;
+	
+    @Autowired
+    private TopicGroupDao TopicGroupDao;
+    @Autowired
+    private UserDataDao userTopicsDao;   
+    @Autowired
+    private TopicAndGroupService topicGroupService;
+    
+	//删除一条消息 （假删除）
+	public boolean removeMessageById(MessageRequest request)
+	{
+		return messageBodyHandler.removeMsg(request);
+	}
+
+	//增加一条消息
+	public MessageBody addTopicMessage(MessageRequest request)
+	{
+		TopicGroup topic = TopicGroupDao.beforeAddTopicMsg(request.getTopicId());
+		MessageBody msgBody = null;
+		if (topic != null)
+			msgBody = messageBodyHandler.newMsg(request, topic);
+		else
+			return null;
+		if (topic.getTopicType()!= request.getMsgType())
+		{
+			//类型不匹配。
+			return null;
+		}
+		//缓存一下topic对象到redis里
+		//topicGroupService.syncTopicGroupCache(topic);
+		Date now = new Date();
+		long time = now.getTime();
+		long delta = time - topic.getLastMsgTime();
+		if (delta > 30*60*1000)
+		{
+			boolean oldKick = false;
+			String topicId = topic.getId().toHexString();
+	    	TopicGroupEvent evt = new TopicGroupEvent();
+	    	evt.setTopicId(topicId);
+	    	evt.setFounderID(topic.getCreator());
+	    	evt.setOperatorId(request.getUserid());
+	    	evt.setUserList(topic.getUsers());
+	    	evt.setTopicType(topic.getTopicType());
+	    	evt.setEvtype(IMConstants.topicAdd);	
+			//讨论组里长时间没人发言， 需要通知一下其他用户订阅该讨论组。
+	    	for (String user: topic.getUsers())
+	    	{
+	    		//长期不活动的讨论组， 还得重新加到用户活动讨论组列表里
+	    		userTopicsDao.addGroup(user, topicId,request.getMsgType());
+	    		if (user.equals(request.getUserid()))
+	    		{
+	    			continue;
+	    		}
+	    		String dest = IMConstants.destNotify +"/"+user;
+	    		try{
+	    			messagingTemplate.convertAndSend(dest, evt);
+	    		}catch(Exception e)
+	    		{
+	    			System.out.println(e);
+	    		}
+	    	} 			
+		}
+		return msgBody;
+	}
+	public MessageBody addMsg4Msg(MessageRequest request)
+	{
+		MessageBody msgBody = null;
+		msgBody = messageBodyHandler.newMsg4Msg(request);
+		return msgBody;		
+	}
+	//查询某主题下的消息
+	public List <MessageBody> lookupTopicMessages(MessageRequest request)
+	{
+		List <MessageBody> msgs = null;
+		String topicId = request.getTopicId();
+		int retCount = request.getMsgRetCnt();
+		int direction = request.getDirection();
+		String msgId = request.getMsgId();
+		if (retCount==0)
+		{
+			retCount = IMConstants.defaultLookupMsgRetCount;
+		}
+		msgs = messageBodyHandler.lookupTopicMsgs(topicId, msgId,retCount, direction);
+		return msgs;
+	}
+	//查询某消息下的子消息
+	public List <MessageBody> lookupMsgs4Msgs(MessageRequest request)
+	{
+		List <MessageBody> msgs = null;
+		String pmsgId = request.getParentMsgId();
+		int retCount = request.getMsgRetCnt();
+		int direction = request.getDirection();
+		String msgId = request.getMsgId();
+		if (retCount==0)
+		{
+			retCount = IMConstants.defaultLookupMsgRetCount;
+		}		
+		msgs = messageBodyHandler.lookupChildMsgs(pmsgId,msgId,retCount, direction);
+		return msgs;
+	}
+	//统计主题下， 某个时间后产生的消息数量
+	public long sumMsgCount(String topicId, String msgId)
+	{
+		return messageBodyHandler.sumMsgCount(topicId, msgId);
+	}
+	
+}

@@ -1,0 +1,37 @@
+//created by zhang jian xin 2016 @IBM
+package com.ibm.cloud.im.config;
+
+import org.apache.commons.logging.Log;
+import org.apache.commons.logging.LogFactory;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.messaging.MessageChannel;
+import org.springframework.messaging.SubscribableChannel;
+import org.springframework.stereotype.Component;
+import org.springframework.web.socket.WebSocketSession;
+import org.springframework.web.socket.messaging.SubProtocolWebSocketHandler;
+
+import com.ibm.cloud.im.server.service.infrastructure.SessionMgr;
+
+import java.io.IOException;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
+
+public class IMSubProtocolWebSocketHandler extends SubProtocolWebSocketHandler {
+    private static final Log logger = LogFactory.getLog(IMSubProtocolWebSocketHandler.class);
+
+    @Autowired
+    private SessionMgr sessionHandler;
+
+    public IMSubProtocolWebSocketHandler(MessageChannel clientInboundChannel, SubscribableChannel clientOutboundChannel) {
+        super(clientInboundChannel, clientOutboundChannel);
+    }
+    @Override
+    public void afterConnectionEstablished(WebSocketSession session) throws Exception {
+        logger.info("New websocket connection was established");
+        sessionHandler.register(session);
+        super.afterConnectionEstablished(session);
+    }
+}

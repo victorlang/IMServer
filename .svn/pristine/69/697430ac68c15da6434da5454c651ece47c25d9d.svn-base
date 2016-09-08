@@ -1,0 +1,303 @@
+//created by zhang jian xin 2016 @IBM
+package com.ibm.cloud.im.model.data.KVStoredao;
+
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.Date;
+import java.util.List;
+
+import org.bson.types.ObjectId;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.data.mongodb.core.query.Criteria;
+import org.springframework.data.mongodb.core.query.Query;
+import org.springframework.data.mongodb.core.query.Update;
+import org.springframework.stereotype.Repository;
+
+import com.ibm.cloud.im.constant.IMConstants;
+import com.ibm.cloud.im.model.data.KVStore.UserData;
+import com.ibm.cloud.im.server.service.business.UnifyMsgService;
+import com.mongodb.WriteResult;
+
+@Repository
+public class UserDataDao extends BaseDao<UserData>{
+    @Autowired
+    private UnifyMsgService unifyMsgService;
+	//写入用户最后离线时间
+	public void logoutPunch(String userId)
+	{
+		Update update = new Update();
+		Date now = new Date();
+		long time = now.getTime();
+		update.set(IMConstants.lastLogOffTime, time);
+		Query query = new Query(Criteria.where(IMConstants.userId).is(userId));
+		this.updateFirst(query, update);
+	}
+	//查询用户讨论组对象
+	public UserData queryUserObj(String userId)
+	{
+		Query query = new Query(Criteria.where(IMConstants.userId).is(userId));
+		return this.findOne(query);
+	}	
+	//写入用户最后一次登录时间
+	public UserData logInPunch(String userId)
+	{
+		Update update = new Update();
+		Date now = new Date();
+		long time = now.getTime();
+		update.set(IMConstants.lastLogInTime, time);
+		Query query = new Query(Criteria.where(IMConstants.userId).is(userId));
+		return this.findModifyReturnNew(query, update);
+	}
+	//创建数据结构
+	public UserData create(String userId, ObjectId topicId)
+	{
+		UserData obj = new UserData();
+		obj.setUserId(userId);
+		Date now = new Date();
+		long time = now.getTime();
+		obj.setLastLogInTime(time);
+		obj.setLastLogOffTime(time);
+		obj.setDiscussGroupList(new ArrayList<String>());
+		obj.setCaseGroupList(new ArrayList<String>());
+		obj.setFileGroupList(new ArrayList<String>());
+		this.insert(obj);
+		return obj;
+	}
+	//为用户减少一个讨论组
+	public void removeDiscussGroup(String userId, String topicGroupId)
+	{
+		while(true)
+		{
+			UserData oldObj = queryUserObj(userId);
+			if(oldObj==null)
+			{
+				break;
+			}			
+			boolean bFound=false;
+			for(int i =0; i <oldObj.getDiscussGroupList().size();i++)
+			{
+				if (oldObj.getDiscussGroupList().get(i).equals(topicGroupId))
+				{
+					//已经有就给前面去。
+					oldObj.getDiscussGroupList().remove(i);
+					bFound=true;
+					break;
+				}
+			}
+			if (!bFound)
+			{
+				break;
+			}
+			Update update = new Update();
+			List<String> list = oldObj.getDiscussGroupList();
+			update.set(IMConstants.discussGroupList, list);
+			Query query = new Query(Criteria.where(IMConstants.userId).is(userId));
+			this.updateFirst(query, update);			
+			break;
+		}
+	}
+	//为用户减少一个Case讨论组
+	public void removeCaseGroup(String userId, String topicGroupId)
+	{
+		while(true)
+		{
+			UserData oldObj = queryUserObj(userId);
+			if(oldObj==null)
+			{
+				break;
+			}			
+			boolean bFound=false;
+			for(int i =0; i <oldObj.getCaseGroupList().size();i++)
+			{
+				if (oldObj.getCaseGroupList().get(i).equals(topicGroupId))
+				{
+					//已经有就给前面去。
+					oldObj.getCaseGroupList().remove(i);
+					bFound=true;
+					break;
+				}
+			}
+			if (!bFound)
+			{
+				break;
+			}
+			Update update = new Update();
+			List<String> list = oldObj.getCaseGroupList();
+			update.set(IMConstants.caseGroupList, list);
+			Query query = new Query(Criteria.where(IMConstants.userId).is(userId));
+			this.updateFirst(query, update);			
+			break;
+		}
+	}
+	//为用户减少一个Case讨论组
+	public void removeFileGroup(String userId, String topicGroupId)
+	{
+		while(true)
+		{
+			UserData oldObj = queryUserObj(userId);
+			if(oldObj==null)
+			{
+				break;
+			}			
+			boolean bFound=false;
+			for(int i =0; i <oldObj.getFileGroupList().size();i++)
+			{
+				if (oldObj.getFileGroupList().get(i).equals(topicGroupId))
+				{
+					//已经有就给前面去。
+					oldObj.getFileGroupList().remove(i);
+					bFound=true;
+					break;
+				}
+			}
+			if (!bFound)
+			{
+				break;
+			}
+			Update update = new Update();
+			List<String> list = oldObj.getFileGroupList();
+			update.set(IMConstants.fileGroupList, list);
+			Query query = new Query(Criteria.where(IMConstants.userId).is(userId));
+			this.updateFirst(query, update);			
+			break;
+		}
+	}
+	public void removeGroup(String userId, String topicGroupId, int type)
+	{
+		if (type == IMConstants.typeIM)
+		{
+			removeDiscussGroup(userId,topicGroupId );
+		}else if (type == IMConstants.typeCaseSubcriber)
+		{
+			removeCaseGroup(userId,topicGroupId );
+		}else if (type == IMConstants.typeFileSubscriber)
+		{
+			removeFileGroup(userId,topicGroupId );
+		}
+	}	
+	public void addGroup(String userId, String topicGroupId, int type)
+	{
+		if (type == IMConstants.typeIM)
+		{
+			addDiscussGroup(userId,topicGroupId );
+		}else if (type == IMConstants.typeCaseSubcriber)
+		{
+			addCaseGroup(userId,topicGroupId );
+		}else if (type == IMConstants.typeFileSubscriber)
+		{
+			addFileGroup(userId,topicGroupId );
+		}
+	}
+	//为用户增加一个讨论组
+	public void addDiscussGroup(String userId, String topicGroupId)
+	{
+		while(true)
+		{
+			UserData oldObj = queryUserObj(userId);
+			if(oldObj==null)
+			{
+				oldObj = unifyMsgService.createUserData(userId);
+			}
+			for(int i =0; i <oldObj.getDiscussGroupList().size();i++)
+			{
+				if (oldObj.getDiscussGroupList().get(i).equals(topicGroupId))
+				{
+					//已经有就给前面去。
+					oldObj.getDiscussGroupList().remove(i);
+					break;
+				}
+			}
+			Update update = new Update();
+			List<String> list = oldObj.getDiscussGroupList();
+			List<String> newList = new ArrayList<String> ();
+			newList.add(topicGroupId);
+			newList.addAll(list);
+			update.set(IMConstants.discussGroupList, newList);
+			Query query = new Query(Criteria.where(IMConstants.userId).is(userId));
+			this.updateFirst(query, update);			
+			break;
+		}
+	}
+	//为用户增加一个讨论组
+	public void addCaseGroup(String userId, String topicGroupId)
+	{
+		while(true)
+		{
+			UserData oldObj = queryUserObj(userId);
+			if(oldObj==null)
+			{
+				oldObj = unifyMsgService.createUserData(userId);
+			}
+			for(int i =0; i <oldObj.getCaseGroupList().size();i++)
+			{
+				if (oldObj.getCaseGroupList().get(i).equals(topicGroupId))
+				{
+					//已经有就给前面去。
+					oldObj.getCaseGroupList().remove(i);
+					break;
+				}
+			}
+			Update update = new Update();
+			List<String> list = oldObj.getCaseGroupList();
+			List<String> newList = new ArrayList<String> ();
+			newList.add(topicGroupId);
+			newList.addAll(list);
+			update.set(IMConstants.caseGroupList, newList);
+			Query query = new Query(Criteria.where(IMConstants.userId).is(userId));
+			this.updateFirst(query, update);			
+			break;
+		}
+	}
+	//为用户增加一个讨论组
+	public void addFileGroup(String userId, String topicGroupId)
+	{
+		while(true)
+		{
+			UserData oldObj = queryUserObj(userId);
+			if(oldObj==null)
+			{
+				oldObj = unifyMsgService.createUserData(userId);
+			}
+			for(int i =0; i <oldObj.getFileGroupList().size();i++)
+			{
+				if (oldObj.getFileGroupList().get(i).equals(topicGroupId))
+				{
+					//已经有就给前面去。
+					oldObj.getDiscussGroupList().remove(i);
+					break;
+				}
+			}
+			Update update = new Update();
+			List<String> list = oldObj.getFileGroupList();
+			List<String> newList = new ArrayList<String> ();
+			newList.add(topicGroupId);
+			newList.addAll(list);
+			update.set(IMConstants.fileGroupList, newList);
+			Query query = new Query(Criteria.where(IMConstants.userId).is(userId));
+			this.updateFirst(query, update);			
+			break;
+		}
+	}
+	//用户讨论组列表瘦身(每次登录的时候做一次)
+	public void updateDiscussTopicIdList(String userId, List <String> topicIds)
+	{
+		Update update = new Update();
+		update.set(IMConstants.discussGroupList, topicIds);
+		Query query = new Query(Criteria.where(IMConstants.userId).is(userId));
+		this.updateFirst(query, update);		
+	}
+	public void updateCaseTopicIdList(String userId, List <String> topicIds)
+	{
+		Update update = new Update();
+		update.set(IMConstants.caseGroupList, topicIds);
+		Query query = new Query(Criteria.where(IMConstants.userId).is(userId));
+		this.updateFirst(query, update);
+	}
+	public void updateFileTopicIdList(String userId, List <String> topicIds)
+	{
+		Update update = new Update();
+		update.set(IMConstants.fileGroupList, topicIds);
+		Query query = new Query(Criteria.where(IMConstants.userId).is(userId));
+		this.updateFirst(query, update);		
+	}	
+}

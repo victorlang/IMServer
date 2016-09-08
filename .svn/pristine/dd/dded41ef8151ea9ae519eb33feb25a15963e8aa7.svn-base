@@ -1,0 +1,688 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Hello WebSocket</title>
+    <script src="sockjs-0.3.4.js"></script>
+    <script src="stomp.js"></script>
+<script src="base64.js"></script>
+<script src="rawinflate.js"></script>
+<script src="rawdeflate.js"></script>
+    <script type="text/javascript">
+        var stompClient = null;
+        var lastSubscribedTopic="";
+        var topicDataMap={};
+        var unSubscriberMap={};
+        function setConnected(connected) {
+            document.getElementById('connect').disabled = connected;
+            document.getElementById('disconnect').disabled = !connected;
+            document.getElementById("buttonsPanel").style.visibility = connected ? 'visible' : 'hidden';
+            document.getElementById("rightFloatingPanel").style.visibility = connected ? 'visible' : 'hidden';
+            document.getElementById("inputPanel").style.visibility = connected ? 'visible' : 'hidden';
+            document.getElementById('conversationDiv').style.visibility = connected ? 'visible' : 'hidden';
+            document.getElementById('response').innerHTML = '';
+        }
+
+        function connect() {
+            var socket = new SockJS('/stomp');
+            stompClient = Stomp.over(socket);       
+            var userid = document.getElementById('userid').value;  
+            var pwd =   document.getElementById('pwd').value;  
+            stompClient.connect({'login':userid, 'securitytoken':pwd}, function(frame) {
+                setConnected(true);
+                console.log('Connected: ' + frame);
+                var loginInitialized=false;
+                var userid = document.getElementById('userid').value;
+	             stompClient.subscribe("/notify/"+userid, function(greeting){
+	                    //showMessage(JSON.parse(greeting.body).content);
+	                    handleEvents(JSON.parse(greeting.body));
+	                    //查询最近订阅的讨论组。
+	                    if (!loginInitialized) 
+	                    {
+	                    	loginInitialized=true;   
+	                    	//只执行一次， 应答由notify通道返回。
+	                    	queryUserBookedDiscussGroup();
+	                    	queryUserMails();
+	                    }               
+	             }
+	             
+	             );
+            },
+            function(msg, errorCode)
+	             {
+	             	if (errorCode == 1000)
+	             	{
+	             		window.alert("服务器连接断开 1. 检查用户名，密码是否正确?");
+	             	}
+	             } 
+            
+            );
+        }
+        function handleEvents(body)
+        {
+        	if (!body.eventName)
+        	{
+        		if (body[0] == '{')
+        			eval("body="+body);
+        		else if  (body[0] == '"')
+        		{
+        			eval("body="+body);
+        			eval("body="+body);
+        		}
+        	}
+        	if (body.errCode)
+        	{
+        		errCode = body.errCode;		
+        		if (errCode == 4)
+        		{
+        			showMessage("你被踢出讨论组 ID= "+body.errMsg , "系统消息");
+        		}else if(errCode ==3)
+        		{
+        			showMessage("重复订阅相同主题，被服务器踢出 "+body.errMsg , "系统消息");
+        		}else if(errCode == 2)
+        		{
+        			showMessage("服务器判断为非法订阅别的用户讨论组 "+body.errMsg , "系统消息");
+        		}else if (errCode == 1)
+        		{
+        			showMessage("服务器判断为非法订阅别的用户的notify消息 "+body.errMsg , "系统消息");
+        		}else if (errCode ==5)
+        		{
+        			showMessage("有人正在在用错误的密码尝试登陆你的账户 "+body.errMsg , "系统消息");
+        		}
+        		else if (errCode == 6)
+        		{
+        			showMessage("同名用户在别处登录系统成功，当前连接关闭", "系统消息" );
+        		}
+        	}else if (body.eventName == "TopicGroupEvent")
+        	{
+        		var founderID = body.founderID;
+        		var discussGroupID = body.topicId;
+        		var eventType = body.evtype;
+        		if(eventType=="add" || eventType == "new" || eventType == "wake")
+        		{
+        			//add后加进来的讨论组
+        			//new新创建的讨论组
+        			//wake自己没订阅， 但是被新消息唤醒的
+	        		var destination = "/discuss/"+body.topicId;
+	        		//先检查是否订阅过， 重复订阅同一个主题会被服务器踢掉。
+	        		if(unSubscriberMap[body.topicId]==null)
+		            {
+		            	//if (eventType != "wake")
+		        		showMessage(body.userList + "被"+body.operatorId+"加入讨论组 ID= "+body.topicId, "系统消息");		            
+			            	 unSubscriberMap[body.topicId] = stompClient.subscribe("/discuss/"+body.topicId, function(greeting){
+			                    handleEvents(JSON.parse(greeting.body));
+			             });
+				        //placeGroupBtnTop(body.topicId);
+			        }	        	
+		        }
+		        if(eventType == "addNotify")
+		        {
+		        	//当前用户已经在组内,而组内有新的用户被加进来,当前用户被通知到。
+	        		showMessage(body.userList + "被"+body.operatorId+"加入讨论组 ID= "+body.topicId, "系统消息");
+		        }
+		        if(eventType=="kick")
+		        {
+		        	//showMessage("你被"+body.operatorId+"踢出讨论组 ID= "+body.topicId , "系统消息");
+		        	var unsubscribCall = unSubscriberMap[body.topicId];
+		        	if(unsubscribCall)
+		        	{
+		        		unsubscribCall.unsubscribe(unsubscribCall.id);
+		        		unSubscriberMap[body.topicId] =null;
+		        		removeWidgets(body.topicId);
+		        	}
+		        }
+		        if(eventType == "kickNotify")
+		        {
+		        	showMessage(body.userList +"被"+body.operatorId+"踢出讨论组 ID= "+body.topicId , "系统消息");
+		        }
+		        if(eventType == "rename")
+		        {
+		        	showMessage(body.operatorId+"改讨论组"+ body.topicId+"名字为： "+body.topicName , "系统消息");
+		        	topicDataMap[body.topicId].topicName = body.topicName;
+		        }
+		        if(eventType == "destory")
+		        {
+		        	showMessage(body.operatorId+"删除讨论组 "+body.topicId, "系统消息");
+		        
+		        }
+        	}else if (body.eventName =="SubscribeEvent")
+        	{
+        		//订阅组topic类型分为三种
+        		//1. 讨论组， type = 0
+        		//2. case组， type = 2
+        		//3. case组， type = 4
+        		//这里只处理讨论组
+        		if (body.topicType != 0)
+        		{
+        			alert("收到Case或者文件的订阅组创建事件");
+        			return;
+        		}
+        		var topicId = body.topicId
+			        if(topicDataMap[topicId]==null)
+			            	topicDataMap[topicId]={};       	
+        		topicDataMap[topicId]=body;
+        		showMessage("订阅成功",body.topicId, body.topicOwner,body.time);
+        		showMessage("上次离线后有"+body.msgCountSinceLastLogoff+"条未读消息",body.topicId, body.topicOwner,body.time);
+        		showMessage("讨论组共有"+body.msgTotalCountInGroup+"条历史消息",body.topicId, body.topicOwner,body.time);
+        		//显示讨论组内最近的三条消息
+        		var msgs = body.msgs;
+        		var lastMsg={};
+        		for (var index in msgs)
+        		{
+        			msg = msgs[index];
+        			msg.time = getTimeFromId(msg.id);
+        			if(msg.bEncrypted)
+        				msg.content = Base64.btou(RawDeflate.inflate(Base64.fromBase64(msg.content)));
+        			showMessage(msg.content,body.topicName, msg.ownerId,msg.time);
+        			lastMsg=msg;
+        		}
+        		if(body.topicName!=null)
+			    {
+				    document.getElementById('discussGroupInfo').innerHTML="选中讨论组名字:"+body.topicName+"\n, ID:"+body.topicId;
+	 			 	showGroupNameBtn(body.topicName,body.topicId, lastMsg.time, lastMsg.ownerId, lastMsg.content);       		
+	 			}
+	 			
+			    document.getElementById('sendMsg').disabled=false;
+			    document.getElementById('reName').disabled=false;
+			    document.getElementById('createGroup').disabled=false;         
+			    document.getElementById('addUser').disabled=false;
+			    document.getElementById('kickUser').disabled=false;
+        	}else if (body.eventName == "lookupMsgRspEvt")
+        	{
+        		//查询应答
+        		var msgs = body.msgs;
+        		var lastMsg={};
+        		for (var index in msgs)
+        		{
+        			var topicId= body.topicId;
+        			msg = msgs[index];
+        			var topicName = topicDataMap[topicId].topicName;
+        			msg.time = getTimeFromId(msg.id);
+        			if(msg.bEncrypted)
+        				msg.content = Base64.btou(RawDeflate.inflate(Base64.fromBase64(msg.content)));
+        			showMessage(msg.content,topicName, msg.ownerId,msg.time);
+        			lastMsg=msg;
+        		}        		
+        	}
+        	
+        	else if (body.eventName =="IMNewMsgEvent")
+        	{
+        		var msgs = body.msgs;
+        		var msg = msgs[0];
+        		var time = getTimeFromId(msg.id);
+        		var topicName= body.topicId;
+        		if (body.topicId)
+        		{
+        			topicName = topicDataMap[body.topicId].topicName;
+        		}
+        		if(msg.bEncrypted)
+        			msg.content = Base64.btou(RawDeflate.inflate(Base64.fromBase64(msg.content)));
+        		showMessage(msg.content, topicName,msg.ownerId, time);
+        		placeGroupBtnTop(body.topicId, time, msg.ownerId, msg.content);
+        	}else if (body.eventName == "qdisgrsp")
+        	{
+        		//登录的时候， 一次查询订阅讨论组的应答。 不要全部订阅所有讨论组， 订阅前面的几个就可以
+        		//服务器发来的消息里， 已经按照最后消息时间排序了。 
+        		var groups= body.discussGroups;
+        		for (var index =0; index<groups.length; index++)
+        		{
+        			var topicId = groups[index].groupId;
+        			topicDataMap[topicId]={};
+        			var topicName = groups[index].groupName;
+        			topicDataMap[topicId].topicName = topicName;
+        			//最后一条消息的时间， 只需要订阅半小时以内的活跃讨论组。 其余不需要订阅
+        			var time = groups[index].lastMsgTime;
+        			if((time-(new Date()).getTime()) <31*60*1000)
+        			{
+        				bookDiscussGroup(topicId, topicName);
+        			}
+        		}
+        		//case订阅组， 按最后更新时间已经排好序了。
+        		var groups= body.caseGroups;
+        		for (var index =0; index<groups.length; index++)
+        		{
+        			var topicId = groups[index].groupId;
+        			topicDataMap[topicId]={};
+        			var topicName = groups[index].groupName;
+        			topicDataMap[topicId].topicName = topicName;
+        			//最后一条消息的时间， 只需要订阅半小时以内的活跃讨论组。 其余不需要订阅
+        			var time = groups[index].lastMsgTime;
+        			if((time-(new Date()).getTime()) <31*60*1000)
+        			{
+        				bookDiscussGroup(topicId, topicName);
+        			}
+        		}
+        		//文件订阅组服务器发来的消息里， 已经按照最后消息时间排序了。 
+        		var groups= body.fileGroups;
+        		for (var index =0; index<groups.length; index++)
+        		{
+        			var topicId = groups[index].groupId;
+        			topicDataMap[topicId]={};
+        			var topicName = groups[index].groupName;
+        			topicDataMap[topicId].topicName = topicName;
+        			//最后一条消息的时间， 只需要订阅半小时以内的活跃讨论组。 其余不需要订阅
+        			var time = groups[index].lastMsgTime;
+        			if((time-(new Date()).getTime()) <31*60*1000)
+        			{
+        				bookDiscussGroup(topicId, topicName);
+        			}
+        		}        		        		
+        	}else if (body.eventName == "queryMailResponse")
+        	{
+        		var mailSinceLastLogOff= body.mailSinceLastLogOff;
+        		var mailUnread= body.mailUnread;
+        		for(var index in mailSinceLastLogOff)
+        		{
+        		    var mail = mailSinceLastLogOff[index];
+        			if(mail.bEncrypted)
+        				mail.content = Base64.btou(RawDeflate.inflate(Base64.fromBase64(mail.content)));    
+        			insertNewMail(mail);
+        		}        		
+        		for(var index in mailUnread)
+        		{
+        		    var mail = mailUnread[index];
+        			if(mail.bEncrypted)
+        				mail.content = Base64.btou(RawDeflate.inflate(Base64.fromBase64(mail.content)));    
+        			insertNewMail(mail); 
+        		}
+        	}else if (body.eventName == "IMNewMailEvent")
+        	{
+        		var mails = body.mails;
+        		for(var index in mails)
+        		{
+        			var mail = mails[index];
+        			if(mail.bEncrypted)
+        				mail.content = Base64.btou(RawDeflate.inflate(Base64.fromBase64(mail.content)));        		
+        			insertNewMail(mail);
+        		}         		
+        	}
+        }
+        function bookDiscussGroup(topicId, topicName)
+        {
+	        if(unSubscriberMap[topicId] ==null)
+			{	
+				unSubscriberMap[topicId] = stompClient.subscribe("/discuss/"+topicId, function(greeting){
+			                    handleEvents(JSON.parse(greeting.body));
+			             });
+			 }
+        }
+        function getTimeFromId(id)
+        {
+			var timestamp = id.substring( 0, 8 );
+			return parseInt( timestamp, 16 ) * 1000; 
+        }
+        
+        function disconnect() {
+            if (stompClient != null) {
+                stompClient.disconnect();
+            }
+            setConnected(false);
+            console.log("Disconnected");
+        }
+        
+        function createDiscussGroup()
+        {
+             
+            var controllerName = "/IMServer/createDiscussGroup";
+            var topicName = document.getElementById('topicName').value;
+            var users = document.getElementById('userids').value; 
+            stompClient.send(controllerName, {}, JSON.stringify({'topicName': topicName, 'userList':users.split(",")}));
+            document.getElementById('topicName').value= document.getElementById('topicName').value+"8";          
+        }
+        function createCaseGroup()
+        {
+            var objectId = "input incorrect and unique Case Object ID here"
+            var controllerName = "/IMServer/createCaseGroup";
+            var topicName = document.getElementById('topicName').value;
+            var users = document.getElementById('userids').value; 
+            stompClient.send(controllerName, {}, JSON.stringify({'topicName': topicName,'objectId':objectId, 'userList':users.split(",")}));
+        }
+        function createFileGroup()
+        {
+        	var objectId = "input incorrect and unique Case Object ID here"
+            var controllerName = "/IMServer/createFileGroup";
+            var topicName = document.getElementById('topicName').value;
+            var users = document.getElementById('userids').value; 
+            stompClient.send(controllerName, {}, JSON.stringify({'topicName': topicName, 'objectId':objectId,'userList':users.split(",")}));
+        }             
+        function queryDiscussGroupMessage()
+        {
+            var controllerName = "/IMServer/queryDiscussGroupMessage";
+            var topicName = document.getElementById('topicName').value;
+            var users = document.getElementById('userids').value; 
+            stompClient.send(controllerName, {}, JSON.stringify({'topicId': lastSubscribedTopic, 'objectId':objectId,'userList':users.split(",")}));
+        }
+           
+        function reName()
+        {
+            var controllerName = "/IMServer/DiscussGroupRename";
+            var content = document.getElementById('message').value;
+            var userid = document.getElementById('userid').value;
+            var topicId = getSelectValue();
+            stompClient.send(controllerName, {}, JSON.stringify({'topicId': topicId, 'topicName':"NewName"}));
+        }
+        function addUser()
+        {
+            var controllerName = "/IMServer/addDiscussGroupUser";
+            var content = document.getElementById('message').value;
+            var userid = document.getElementById('userid').value;
+            var users = document.getElementById('userids').value; 
+            var topicId = getSelectValue();      
+            stompClient.send(controllerName, {}, JSON.stringify({'topicId': topicId,'userList':users.split(",")}));
+        }
+        function kickUser()
+        {
+            var controllerName = "/IMServer/removeDiscussGroupUser";
+            var content = document.getElementById('message').value;
+            var userid = document.getElementById('userid').value;
+            var users = document.getElementById('userids').value; 
+            var topicId = getSelectValue(); 
+            stompClient.send(controllerName, {}, JSON.stringify({'topicId': topicId,'operatorId':userid, 'userList':users.split(",")}));
+        	
+        }
+        function sendMsg2DisccussGroup() {
+            var controllerName = "/IMServer/publish2DiscussGroup";
+            var content = document.getElementById('message').value;
+            //需要对content加密并压缩后再传输
+            content= Base64.toBase64(RawDeflate.deflate(Base64.utob(content)));
+            var userid = document.getElementById('userid').value;
+             var topicId = getSelectValue(); 
+            stompClient.send(controllerName, {}, JSON.stringify({'topicId': topicId,'content': content,"bEncrypted":true }));
+        }
+        
+        function queryUserBookedDiscussGroup()
+        {
+            var controllerName = "/IMServer/queryUserBookedDiscussGroup";
+            var content = document.getElementById('message').value;
+            stompClient.send(controllerName, {}, JSON.stringify({}));
+        }
+        function queryUserMails()
+        {
+            var controllerName = "/IMServer/queryUserMails";
+            stompClient.send(controllerName, {}, JSON.stringify({}));        
+        }
+        function sendMail()
+	    {
+	    	//给用户发送邮件和通知的服务。
+	    	//对应的POST请求为/IMServer/sendMail2User， REST需要加sender参数
+            var controllerName = "/IMServer/sendMail2User";
+            var content = document.getElementById('message').value;
+            //需要对content加密并压缩后再传输
+            content= Base64.toBase64(RawDeflate.deflate(Base64.utob(content)));
+            var users = document.getElementById('userids').value; 
+            //非必填参数 objectId， bAck，bShareMsg
+            //bAck为true的时候， 需要客户端回执标识已读， 为false，所有被收到的邮件自动被标识为已读
+            //bShareMsg为true的时候， 后台存储使用共享消息本体文件。 为false时， 独立存储。
+            //bEncrypted内容压缩并加密
+            
+            var bNeedAck = document.getElementById('getBack').checked;
+
+            var shareMailBody = document.getElementById('share').checked;
+           
+            stompClient.send(controllerName, {}, JSON.stringify({'content': content,'toIdList':users.split(","),'objectId':"CEOBJECTID",'bShareMsg':shareMailBody,'bAck':bNeedAck, 'bEncrypted':true}));	    	
+	    }
+	    function removeMail(mailId)
+	    {
+	    	//只能删自己的邮件。
+            var controllerName = "/IMServer/sendMail2User";
+            var topicId = getSelectValue(); 
+            stompClient.send(controllerName, {}, JSON.stringify({msgId:mailId}));	    	
+	    	
+	    }
+	    function markReadMail(mailId)
+	    {
+            var controllerName = "/IMServer/markReadedMail";
+            stompClient.send(controllerName, {}, JSON.stringify({msgId:mailId}));	    	
+	    }
+        
+        function showMessage(message, discusstopicId, userID, time) {
+            var response = document.getElementById('response');
+            var p = document.createElement('p');
+            p.style.wordWrap = 'break-word';
+            var userInfo="";
+            if (userID)
+            {
+            	userInfo = userID+" say:>>>\t"
+            }
+            var timeInfo = "";
+            if(time)
+            {
+            	timeInfo = (new Date(time)).toLocaleTimeString();
+            }
+            	p.appendChild(document.createTextNode(discusstopicId +">" + timeInfo+">" +userInfo+message));
+
+            response.appendChild(p);
+            document.getElementById('conversationDiv').scrollTop =document.getElementById('conversationDiv').scrollHeight;       
+        }
+        function clickGroupBtn(id)
+        {
+        	//切换当前的发送讨论组
+        	lastSubscribedTopic=id;
+        	var topicName = topicDataMap[id].topicName;
+        	var topicId = topicDataMap[id].topicId;
+        	document.getElementById('discussGroupInfo').innerHTML="选中讨论组名字:"+topicName+"\n, ID:"+topicId;
+        	document.getElementById("select1").value = id;
+        	
+        }
+        ///以下都是测试用到的UI
+        function placeGroupBtnTop(topicId, time, userId, msg)
+        {
+        	var timeInfo="";
+        	var subMsg="";
+        	if (time==null)
+        	{
+        		timeInfo = (new Date()).toLocaleTimeString();
+        	}else
+        	{
+        		timeInfo = (new Date(time)).toLocaleTimeString();
+        	}
+        	if(userId==null)
+        	{
+        	 userId="";
+        	}
+        	if(msg.length > 6)
+        	{
+        		subMsg = msg.substr(0,4)+"...";
+        	}else
+        	{
+        		subMsg = msg;
+        	}
+        	//讨论组置顶
+        	var groups = document.getElementById('groups');
+        	var array = groups.getElementsByTagName("button");
+        	var topBtn=document.getElementById(topicId);
+        	var topBtnonclick = topBtn.onclick;
+        	var topName = topBtn.name;
+        	var topId = topBtn.id;
+        	var keyPos = 0;
+        	for(keyPos = 0; keyPos<array.length;keyPos++)
+        	{
+         			if(array[keyPos].id==topicId)
+        			{
+        				break;
+        			}       				
+        	}
+        	if (topBtn != null)
+        	{
+        		//起泡
+        		for(var index = keyPos; index>0;index--)
+        		{
+        			var id = array[index-1].id;
+        			var innerHTML = array[index-1].innerHTML;
+        			var onclick = array[index-1].onclick;
+        			array[index].id = id;
+        			array[index].innerHTML= innerHTML;
+        			array[index].onclick= onclick;
+        		}
+        		array[0].id = topId;
+        		array[0].innerHTML= topicDataMap[topId].topicName+"#"+userId+"@"+timeInfo+":"+ subMsg;
+        		array[0].onclick= topBtnonclick;
+	       }
+        }
+        function showGroupNameBtn(name, topicId, time, userId, msg)
+        {
+        	var timeInfo="";
+        	if (time==null)
+        	{
+        		timeInfo = "";
+        	}else
+        	{
+        		timeInfo = (new Date(time)).toLocaleTimeString();
+        	}
+        	if(userId==null)
+        	{
+        	 userId="";
+        	}
+        	if(msg == null)
+        	{
+        		msg= "";
+        	}
+        	if (document.getElementById(topicId)!=null)
+        	{
+        		return;
+        	}
+        	var subMsg="";
+        	if(msg.length > 6)
+        	{
+        		subMsg = msg.substr(0,4)+"...";
+        	}else
+        	{
+        		subMsg = msg;
+        	}        	
+        	var groups = document.getElementById('groups');
+        	var p = document.createElement('p');
+        	p.id = "p"+topicId;
+        	var button = document.createElement("button");
+        	button.id = topicId;
+        	button.style = "min-width: 300px";
+        	button.innerHTML = name+"#"+userId+"@"+timeInfo + ":"+subMsg;
+        	button.onclick=function(){clickGroupBtn(topicId);};
+        	p.appendChild(button);
+        	groups.appendChild(p);
+			topicDataMap[topicId].btn = button;
+			addSelectValue(topicId);
+        }
+        function clickAckReadMail(p, mail)
+        {
+        	//需要客户端回执， 确认读过的通知。
+        	if (!mail.unRead)
+        	{
+        		//没读过的邮件，处理
+        		p.style = "background:green";
+        		mail.unRead =true;
+        		markReadMail(mail.id);
+        	}
+        }
+        //insertNewMail("urgent must read", 1458330804429, "zjx", "tstste", true);
+        function insertNewMail(mail)
+        {
+       		var content = mail.content;
+       		var sender = mail.sender;
+       		var mailId =  mail.id
+       		var ackRead = !mail.unRead;
+        	var time = getTimeFromId(mailId);
+            var timeInfo = "";
+            if(time)
+            {
+            	timeInfo = (new Date(time)).toLocaleTimeString();
+            }         
+        	var groups = document.getElementById('mailbox');
+			var newItem=document.createElement("LI");
+			var textnode=document.createTextNode(timeInfo+" " +content);
+			newItem.appendChild(textnode)
+			
+			var list=document.getElementById("mailbox")
+			list.insertBefore(newItem,list.childNodes[1]);
+       	
+        	if (ackRead == true)
+        	{
+        		newItem.style = "background:pink";
+        		newItem.ondblclick=function(){clickAckReadMail(newItem, mail);};
+        	}
+        }
+	    function addSelectValue(topicId){
+	    	var select = document.getElementById("select1"); 
+	    	var op=document.createElement("option");  
+	    	op.setAttribute("value",topicId)
+	    	op.appendChild(document.createTextNode(topicDataMap[topicId].topicName));
+	    	topicDataMap[topicId].option= op;
+	    	select.appendChild(op)
+			//select.options.length=0;   
+			//select.options.remove(i);
+	    }
+	    function removeWidgets(topicId)
+	    {
+	    	topicDataMap[topicId].option.remove();
+		    document.getElementById("p"+topicId).remove();
+	    	
+	    }
+	    function getSelectValue()
+	    {
+	    	var t = document.getElementById("select1"); 
+	    	if(t.selectedIndex>=0)
+	    	{
+		    	var selectValue =t.options[t.selectedIndex].value;
+		    	return selectValue;
+		    }else if(t.options[0].value!=null)
+		    {
+		    	t.selectedIndex=0;
+		    	return t.options[t.selectedIndex].value;
+		    }
+	    }
+	    function clearScreen()
+	    {
+	    	document.getElementById('response').innerHTML = '';
+	    }
+
+
+    </script>
+</head>
+<body onload="disconnect()">
+<noscript><h2 style="color: #ff0000">Seems your browser doesn't support Javascript! Websocket relies on Javascript being enabled. Please enable
+    Javascript and reload this page!</h2></noscript>
+<div style = "float: left">
+    <div>
+        <button id="connect" onclick="connect();">Connect</button>
+        <button id="disconnect" disabled="disabled" onclick="disconnect();">Disconnect</button>
+        <label>UserID:</label><input type="text" id="userid" value="user1"/>
+        <label>password:</label><input type="text" id="pwd" value="password"/>
+    </div>
+    <div id="buttonsPanel">
+        <p>
+        <label>讨论组名字参数:</label><input type="text" id="topicName" value="group1"/>
+        <label>用户名参数</label><input type="text" id="userids" value="user2,user3"/>
+        <lable>共享参数</lable><input type="checkbox" id="share"/>
+        <label>需要回执</label><input type="checkbox" id="getBack"/>
+        </p>    
+    	<button id="createGroup" onclick="createDiscussGroup();" disabled="true">创建新讨论组</button>
+        <button id="reName" onclick="reName();" disabled="true">讨论组改名</button>
+        <button id="addUser" onclick="addUser();" disabled="true">讨论组加人</button>
+        <button id="kickUser" onclick="kickUser();" disabled="true">讨论组踢人</button>
+        <button id="lookupMsg" onclick="kickUser();" disabled="true">查询当前讨论组的消息</button> 
+           
+    </div>
+    <div id="conversationDiv" style="height:550px; min-width: 700px;max-width:800px; overflow:scroll">
+        <p id="response"></p>
+    </div>
+    <div id= "inputPanel" style="position: absolute;bottom: 50px;">
+        <label>输入</label><input style="width:350px" type="text" id="message" />
+        <button id="sendMsg" onclick="sendMsg2DisccussGroup();" disabled="true">向讨论组发消息</button>
+        <select id="select1" name="select1"> 
+         </select>     
+         <button id="sendMsg" onclick="clearScreen();" >clearScreen</button>
+         <button id="sendMail" onclick="sendMail();" >sendMail</button>
+    </div>
+</div>
+<div id="rightFloatingPanel" style="width:400px;height:750px;float:right;">
+	<div id="groups" style="width:380px;height:50%;overflow:scroll;position:absolute;top:5px">
+		<p>发送消息的讨论组动态列表</p>
+		<p id="discussGroupInfo"></p>
+	</div>
+	<div style="width:380px;height:50%;position:absolute;bottom:5px">
+		<p>个人通知和邮件栏</p>
+		<ul id="mailbox" style="width:90%;height:90%;overflow:scroll;">
+			<li id="firstmail"></li>
+		</ul>
+	</div>
+</div>
+</body>
+</html>

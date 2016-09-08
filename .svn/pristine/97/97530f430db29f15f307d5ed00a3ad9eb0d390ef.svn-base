@@ -1,0 +1,348 @@
+//created by zhang jian xin 2016 @IBM
+package com.ibm.cloud.im.model.data.KVStoredao;
+
+import java.lang.reflect.Array;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.Date;
+
+
+
+import java.util.List;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+import org.bson.types.ObjectId;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.data.domain.Sort;
+import org.springframework.data.mongodb.core.query.Criteria;
+import org.springframework.data.mongodb.core.query.Query;
+import org.springframework.data.mongodb.core.query.Update;
+import org.springframework.stereotype.Repository;
+/*根据mongo id获得时间戳
+ * var objectIdFromDate = function (date) {
+	return Math.floor(date.getTime() / 1000).toString(16) + "0000000000000000";
+};
+
+var dateFromObjectId = function (objectId) {
+	return new Date(parseInt(objectId.substring(0, 8), 16) * 1000);
+}; 
+ * */
+
+
+
+
+
+
+
+
+
+
+
+
+
+import com.ibm.cloud.im.constant.IMConstants;
+import com.ibm.cloud.im.model.data.KVStore.TopicGroup;
+import com.ibm.cloud.im.model.rquest.TopicGroupRequest;
+import com.ibm.cloud.im.server.service.infrastructure.MongoConnectionMgr;
+
+@Repository
+public class TopicGroupDao extends BaseDao<TopicGroup> {
+	
+	//@Autowired
+	//MongoConnectionMgr mongoConnMgr;
+	//根据ID查询主题
+	public TopicGroup BytopicId(String topicId) {
+    	//ApplicationContext ctx = 
+        //        new AnnotationConfigApplicationContext(SpringMongoConfig.class);
+    	//MongoOperations mongoOperation = (MongoOperations) ctx.getBean("mongoTemplate");
+    	
+		Query query = new Query(Criteria.where(IMConstants._id).is(new ObjectId(topicId)));
+		//return mongoOperation.findOne(query, TopicGroup.class);
+		return findOne(query);
+	}
+	public  TopicGroup BytopicId(ObjectId topicId) {
+		Query query = new Query(Criteria.where(IMConstants._id).is(topicId));
+		return findOne(query);
+	}
+	public List<TopicGroup> ByObjectId(String objectId) {
+    	//ApplicationContext ctx = 
+        //        new AnnotationConfigApplicationContext(SpringMongoConfig.class);
+    	//MongoOperations mongoOperation = (MongoOperations) ctx.getBean("mongoTemplate");
+    	
+		Query query = new Query(Criteria.where(IMConstants.objectId).is(objectId));
+		//return mongoOperation.findOne(query, TopicGroup.class);
+		return find(query);
+	}
+	public List<TopicGroup> ByName(String topicName) {
+    	//ApplicationContext ctx = 
+        //        new AnnotationConfigApplicationContext(SpringMongoConfig.class);
+    	//MongoOperations mongoOperation = (MongoOperations) ctx.getBean("mongoTemplate");
+    	
+		Query query = new Query(Criteria.where(IMConstants.topicName).is(topicName));
+		//return mongoOperation.findOne(query, TopicGroup.class);
+		return find(query);
+	}	
+	public List <TopicGroup> BytopicId(List<String> topicIds) {
+    	//ApplicationContext ctx = 
+        //        new AnnotationConfigApplicationContext(SpringMongoConfig.class);
+    	//MongoOperations mongoOperation = (MongoOperations) ctx.getBean("mongoTemplate");
+    	
+		Query query = new Query(Criteria.where(IMConstants._id).in(topicIds));
+		//return mongoOperation.findOne(query, TopicGroup.class);
+		query.with(new Sort(Sort.Direction.DESC,IMConstants.lastMsgTime));
+		return this.find(query);
+	}	
+	//根据ID修改主题名字
+	public TopicGroup updateTopicName(String topicId, String name)
+	{
+		Update update = new Update();
+		update.set(IMConstants.topicName, name);
+		Query query = new Query(Criteria.where(IMConstants._id).is(new ObjectId(topicId)));
+		//updateFirst(query, update);
+		return this.findModifyReturnNew(query, update);
+	}
+	//创建新的主题
+	public TopicGroup createTopic(TopicGroupRequest req)
+	{
+		TopicGroup topic =  new TopicGroup();
+
+		//用户属性
+		topic.setTopicName(req.getTopicName());
+		List<String> list = req.getUserList();
+		for(int i = 0; i < list.size();i++ )
+		{
+			list.set(i, list.get(i).toLowerCase());
+		}
+		Collections.sort(list);
+		topic.setUsers(req.getUserList());
+		topic.setObjId(req.getObjectId());
+		topic.setCreator(req.getOperatorId());
+		topic.setTopicType(req.getTopicType());
+		Date now = new Date();
+		long createtime = now.getTime();
+		topic.setLastMsgTime(createtime);
+		topic.setLastMsgSeq(0);
+		topic.setRefTopicGroupIds(req.retrieveRefTopicGroupIds());
+		//系统属性
+		topic.setModifyTime(createtime);
+		topic.setState(0);
+		insert(topic);
+		return topic;
+	}
+	
+	//删除主题
+	public TopicGroup removeTopic(TopicGroupRequest req)
+	{
+
+		Update update = new Update();
+		update.set(IMConstants.state, 1);
+		Query query = new Query(Criteria.where(IMConstants._id).is(new ObjectId(req.getTopicId())));
+		//updateFirst(query, update);
+		return this.findModifyReturnNew(query, update);
+		
+	}
+	//增加一条消息更新主题的最后消息序号， 并以原子操作方式获得修改后的对象值
+	//用findmodify保证原子操作， 保证消息序号不会被重复或被打乱。
+	public TopicGroup beforeAddTopicMsg(String topicId)
+	{
+		TopicGroup group = BytopicId(topicId);
+		if (group==null)
+		{
+			return null;
+		}
+		Update update = new Update();
+		Date now = new Date();
+		long createtime = now.getTime();
+		update.set(IMConstants.lastMsgTime, createtime);
+		update.inc(IMConstants.lastMsgSeqence, 1);
+		Query query = new Query(Criteria.where(IMConstants._id).is(new ObjectId(topicId)));
+		TopicGroup obj =  this.findAndModify(query, update);
+		obj.setLastMsgSeq(obj.getLastMsgSeq()+1);
+		return obj;
+	}
+	
+	//增加订阅某主题的用户
+	public TopicGroup addUser(String topicId, String operatorId, List <String> newUserIds)
+	{
+		//因为mongo没有文件锁， 必须用findmodify原子操作来判断， 避免多线程写入数据被覆盖的情况。 
+		TopicGroup oldGroup = BytopicId(topicId);
+		TopicGroup oldGroup2=null;
+		TopicGroup newGroup=null;
+		List <String> validUsers=new ArrayList<String>();
+	
+		while (oldGroup!=null)
+		{
+			boolean validated = true;
+			List <String> userList = oldGroup.getUsers();
+			validUsers.clear();
+			for (String newid : newUserIds)
+			{
+				//必须重做一次 ， 因为一旦有下次循环的时候，oldGroup已经变了。
+				int index = -1;
+				if((index = Collections.binarySearch(userList, newid))<0)
+				{
+					validUsers.add(newid);
+					userList.add(newid);
+				}
+			}	
+			if(validUsers.size()==0)
+			{
+				//不必写数据库， 既然都有了。
+				//newGroup = oldGroup;
+				newUserIds.clear();
+				break;
+			}			
+			Collections.sort(userList);
+			Update update = new Update();
+			Date now = new Date();
+			long modifyTime = now.getTime();
+			update.set(IMConstants.userList, userList);
+			update.set(IMConstants.modifyTime, modifyTime);
+			Query query = new Query(Criteria.where(IMConstants._id).is(new ObjectId(topicId)));
+			oldGroup2 = this.findAndModify(query, update);
+			//比较oldGroup and oldGroup2
+			List <String> userListinMongoBeforeWrite = oldGroup2.getUsers();
+			if (userListinMongoBeforeWrite.size() != (userList.size()-validUsers.size()))
+			{
+				//重新用写之前的数据重新整
+				oldGroup = oldGroup2;
+				continue;
+			}
+			userList.removeAll(validUsers);
+			//Collections.sort(userList);删除前有序， 所以删除后应该是有序的
+			//校验以后应该一样， 不一样， 就有问题了。。
+			for (int i=0;i<userList.size();i++)
+			{
+				if (!userList.get(i).equals(userListinMongoBeforeWrite.get(i)))
+				{
+					validated=false;
+					break;
+				}
+			}
+			if(validated==false)
+			{
+				//不一样重新写
+				oldGroup = oldGroup2;
+				continue;
+			}
+			userList.addAll(validUsers);
+			oldGroup2.setUsers(userList);
+			newGroup = oldGroup2;
+			newUserIds.clear();
+			newUserIds.addAll(validUsers);
+			break;
+		}
+		return newGroup;
+	}
+	public TopicGroup addUser(TopicGroupRequest req)
+	{
+		return addUser(req.getTopicId(),req.getOperatorId(),req.getUserList());
+	}
+	public TopicGroup addRefTopicGroup(TopicGroupRequest req)
+	{
+		Update update = new Update();
+		update.pushAll(IMConstants.refTopicGroupIds, req.retrieveRefTopicGroupIds().toArray());
+		Query query = new Query(Criteria.where(IMConstants._id).is(new ObjectId(req.getTopicId())));
+		return this.findModifyReturnNew(query, update);
+	}
+	public TopicGroup removeRefTopicGroup(TopicGroupRequest req)
+	{
+		Update update = new Update();
+		update.pullAll(IMConstants.refTopicGroupIds, req.retrieveRefTopicGroupIds().toArray());
+		Query query = new Query(Criteria.where(IMConstants._id).is(new ObjectId(req.getTopicId())));
+		return this.findModifyReturnNew(query, update);		
+	}
+	//为某个用户取消订阅某个主题
+	public TopicGroup removeUser(String topicId, String operatorId, List<String> kickedUserIds)
+	{
+		//因为mongo没有文件锁， 必须用findmodify原子操作来判断， 避免多线程写入数据被覆盖的情况。 
+		TopicGroup oldGroup = BytopicId(topicId);
+		TopicGroup oldGroup2=null;
+		TopicGroup newGroup=null;
+		List <String> validUsers=new ArrayList<String>();
+	
+		while (oldGroup!=null)
+		{
+			boolean validated = true;
+			List <String> userList = oldGroup.getUsers();
+			validUsers.clear();
+			for (String newid : kickedUserIds)
+			{
+				//必须重做一次 ， 因为一旦有下次循环的时候，oldGroup已经变了。
+				int index = -1;
+				if((index = Collections.binarySearch(userList, newid))>=0)
+				{
+					validUsers.add(newid);
+					userList.remove(index);
+				}
+			}
+			if(validUsers.size()==0)
+			{
+				kickedUserIds.clear();
+				break;
+			}
+			//Collections.sort(userList);//不需要排序， 删除操作保证结果有序
+			Update update = new Update();
+			Date now = new Date();
+			long modifyTime = now.getTime();
+			update.set(IMConstants.userList, userList);
+			update.set(IMConstants.modifyTime, modifyTime);
+			Query query = new Query(Criteria.where(IMConstants._id).is(new ObjectId(topicId)));
+			oldGroup2 = this.findAndModify(query, update);
+			//比较oldGroup and oldGroup2
+			List <String> userListinMongoBeforeWrite = oldGroup2.getUsers();
+			if (userListinMongoBeforeWrite.size() != (userList.size()+validUsers.size()))
+			{
+				//重新用写之前的数据重新整
+				oldGroup = oldGroup2;
+				continue;
+			}
+			userList.addAll(validUsers);
+			Collections.sort(userList);
+			//校验以后应该一样， 不一样， 就有问题了。。
+			for (int i=0;i<userList.size();i++)
+			{
+				if (!userList.get(i).equals(userListinMongoBeforeWrite.get(i)))
+				{
+					validated=false;
+					break;
+				}
+			}
+			if(validated==false)
+			{
+				//不一样重新写
+				oldGroup = oldGroup2;
+				continue;
+			}
+			userList.removeAll(validUsers);
+			oldGroup2.setUsers(userList);
+			newGroup = oldGroup2;
+			kickedUserIds.clear();
+			kickedUserIds.addAll(validUsers);
+			break;
+		}
+		return newGroup;
+	}
+	public TopicGroup removeUser(TopicGroupRequest req)
+	{
+		return removeUser(req.getTopicId(),req.getOperatorId(),req.getUserList());
+	}
+}

@@ -1,0 +1,67 @@
+//created by zhang jian xin 2016 @IBM
+package com.ibm.cloud.im.model.rquest;
+
+import java.util.ArrayList;
+import java.util.List;
+
+public class TopicGroupRequest {
+    private String topicId;
+
+    private String objectId;//主题关联的数据对象ID
+	
+	private String topicName;//主题名字
+	
+	private List <String> userList;//用户列表
+	
+	private long topicType;
+	public TopicGroupRequest()
+	{
+		userList= new ArrayList<String>();
+	}
+	
+	public long getTopicType() {
+		return topicType;
+	}
+	public void setTopicType(long topicType) {
+		this.topicType = topicType;
+	}
+	public void setTopicId(String topicId) {
+		this.topicId = topicId;
+	}
+	public void setObjectId(String objectId) {
+		this.objectId = objectId;
+	}
+	public void setTopicName(String topicName) {
+		this.topicName = topicName;
+	}
+	public List<String> getUserList() {
+		return userList;
+	}
+	public void setUserList(List<String> userList) {
+		this.userList = userList;
+	}
+	String operatorId;//发起请求的用户ID
+	
+    public String getTopicId() {
+        return topicId;
+    }
+    public String getOperatorId()
+    {
+    	return operatorId;
+    }
+    public void setOperatorId(String newvalue)
+    {
+    	if (newvalue != null)
+    	{
+    		operatorId=newvalue;
+    	}
+    }
+    public String getObjectId()
+    {
+    	return objectId;
+    }
+    public String getTopicName()
+    {
+    	return topicName;
+    }
+}

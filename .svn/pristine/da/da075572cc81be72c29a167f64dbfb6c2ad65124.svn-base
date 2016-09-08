@@ -1,0 +1,540 @@
+//created by zhang jian xin 2016 @IBM
+package com.ibm.cloud.im.server.service.infrastructure;
+
+import org.apache.commons.logging.Log;
+import org.apache.commons.logging.LogFactory;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.context.ApplicationContext;
+import org.springframework.context.annotation.AnnotationConfigApplicationContext;
+import org.springframework.messaging.Message;
+import org.springframework.messaging.MessageChannel;
+import org.springframework.messaging.MessageHandler;
+import org.springframework.messaging.simp.SimpMessageHeaderAccessor;
+import org.springframework.messaging.simp.stomp.StompCommand;
+import org.springframework.messaging.simp.stomp.StompHeaderAccessor;
+import org.springframework.messaging.support.ExecutorSubscribableChannel;
+import org.springframework.messaging.support.MessageHeaderAccessor;
+import org.springframework.messaging.support.MessageBuilder;
+import org.springframework.stereotype.Component;
+import org.springframework.stereotype.Service;
+import org.springframework.web.socket.WebSocketSession;
+import org.springframework.messaging.simp.broker.SimpleBrokerMessageHandler;
+import org.springframework.messaging.simp.annotation.support.SimpAnnotationMethodMessageHandler;
+import org.springframework.messaging.simp.SimpMessagingTemplate;
+
+import com.ibm.cloud.im.config.WebSocketConfig;
+import com.ibm.cloud.im.constant.IMConstants;
+import com.ibm.cloud.im.server.controller.TopicGroupController;
+import com.ibm.cloud.im.server.service.business.UnifyMsgService;
+
+import java.io.IOException;
+import java.util.Collections;
+import java.util.Date;
+import java.util.Iterator;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
+
+@Component
+public class SessionMgr {
+	private static Log logger = LogFactory.getLog(SessionMgr.class);
+	private final ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();
+	
+	public class SessionData{
+		WebSocketSession session;
+		Map <String, String> topicsSubId; //key是topic,值是subId， 目前只允许一个用户订阅一次。
+		Map <String, String> subIdTopics; 
+		public Map<String, String> getSubIdTopics() {
+			return subIdTopics;
+		}
+		public void setSubIdTopics(Map<String, String> subIdTopics) {
+			this.subIdTopics = subIdTopics;
+		}
+		Map <String, MessageChannel> subIdChannel;
+		public Map<String, MessageChannel> getSubIdChannel() {
+			return subIdChannel;
+		}
+		public void setSubIdChannel(Map<String, MessageChannel> subIdChannel) {
+			this.subIdChannel = subIdChannel;
+		}
+		public Map<String, String> getTopicsSubId() {
+			return topicsSubId;
+		}
+		public void setTopicsSubId(Map<String, String> topicsSubId) {
+			this.topicsSubId = topicsSubId;
+		}
+		SessionData()
+		{
+			topicsSubId = new ConcurrentHashMap<String, String>();
+			subIdChannel = new ConcurrentHashMap<String, MessageChannel>();
+			subIdTopics = new ConcurrentHashMap<String, String>();
+		}
+		public WebSocketSession getSession() {
+			return session;
+		}
+		public void setSession(WebSocketSession session) {
+			this.session = session;
+		}
+
+		
+	}
+    private final Map<String, SessionData> sessionMap = new ConcurrentHashMap<>();
+    
+    // "Topic {sessionid, sessionid,}" 
+    private final Map<String, ConcurrentHashMap<String, String>> topicMap = new ConcurrentHashMap<>();
+    @Autowired
+    RedisMessageHandler redisMq;      
+	
+    @Autowired
+	private UnifyMsgService messagingTemplate;   
+    
+    @Autowired
+    private ApplicationContext simpleBrokerContext;
+    @Autowired
+    UnifyMsgService unifyMsgService;   
+    //private ApplicationContext simpleBrokerContext = new AnnotationConfigApplicationContext(WebSocketConfig.class);
+    
+    @Value("${IMSession.timeoutMinutes}")
+    public int timeoutMinutes=10;
+    
+    @Value("${IMSession.MaxChannelWarningForSingleUser}")
+    public int channelMax=1000;
+    /***
+     * 
+     */
+    public SessionMgr() {
+    	//TODO session超时的时候关闭
+        scheduler.scheduleAtFixedRate(new Runnable() {
+            @Override
+            public void run() {
+            	synchronized(this)
+            	{
+            		long now = System.currentTimeMillis();
+	                sessionMap.keySet().forEach(k -> {
+	                    try {
+	                    	SessionData data = sessionMap.get(k);
+	                    	WebSocketSession session = data.getSession();
+	                    	long lastKickTime = now;
+	                    	if (session!=null && session.getAttributes().get(IMConstants.lastKickTime)!=null)
+	                    	{
+	                    		lastKickTime= (long)session.getAttributes().get(IMConstants.lastKickTime);
+	                    	}
+	                    	if (session==null)
+	                    	{
+	                    		cleanDest4Session(k);
+	                    		sessionMap.remove(k);
+	                    	}
+	                        if (now < lastKickTime || (now-lastKickTime)>1000*60*timeoutMinutes)
+	                    	{
+	                        	String userName = (String) session.getAttributes().get(IMConstants.loginName);
+	                        	 System.out.println("超时关闭连接:  "+ userName);
+	                         	//cleanDest4Session(k);//这里不用调。close时候会间接调用disConnectSession
+	                            //sessionMap.remove(k);//这里没必要， close里会删除                        	 
+	                        	 session.close();
+	                    	}
+	                    } catch (IOException e) {
+	                    	logger.error("Error while closing websocket session: {}", e);
+	                    }
+	                });
+            	}
+            }
+        }, 10, 10, TimeUnit.SECONDS);
+    	}
+
+    public synchronized void register(WebSocketSession session) {
+    	SessionData data = new SessionData();
+    	data.setSession(session);
+        sessionMap.put(session.getId(), data);
+        System.out.println("连接建立: sessionID:" +session.getId() +"   URI:"+session.getUri());
+    }
+    /***
+     * 
+     * @param accessor
+     * @return
+     */
+	public String getOperatorName(SimpMessageHeaderAccessor accessor)
+	{
+		String ret=null;
+		if (accessor!=null)
+		{
+			Map<String, Object>  map = accessor.getSessionAttributes();
+			if (map !=null)
+			{
+				ret	=(String) map.get(IMConstants.loginName);
+			}
+		}
+		 return ret;
+	}
+	/***
+	 * 
+	 * @param accessor
+	 * @param bClose
+	 */
+	public synchronized void disConnectSession(SimpMessageHeaderAccessor accessor, boolean bClose) 
+	{
+		String k = accessor.getSessionId();
+		SessionData sessionData= sessionMap.get(k);
+			if (sessionData == null)
+			{
+				return;
+			}
+			WebSocketSession session  = sessionData.getSession();
+			
+			if (session != null)
+			{
+				try 
+				{
+					cleanDest4Session(k);
+					if (bClose)
+					{
+						session.close();
+					}				
+					sessionMap.remove(k);
+	
+				}catch(IOException e)
+				{
+					logger.fatal(e);
+				}
+			}
+	}
+	public synchronized void disConnectSession(SimpMessageHeaderAccessor accessor)
+	{
+		String k = accessor.getSessionId();
+		SessionData sessionData= sessionMap.get(k);
+		WebSocketSession session  = sessionData.getSession();
+		try {
+			session.close();
+		} catch (IOException e) {
+			// TODO Auto-generated catch block
+			e.printStackTrace();
+		}
+	}
+	/***
+	 * 
+	 * @param userName
+	 * @param exceptSessionId
+	 */
+	public synchronized void kickUserConnections(String userName,String device, String exceptSessionId)
+	{
+		//TODO 如果放到云上， 需要到redis里检查到底有几个用户连上来了。 
+		//踢掉， 最长时间没动做的用户连接。 
+		//暂时先只在本机这样检查， 
+		synchronized(this)
+		{
+			String dest =IMConstants.destNotify+"/"+userName;
+			ConcurrentHashMap <String,String> map = topicMap.get(dest);
+			if (map!= null)
+			{
+				map.keySet().forEach(id -> {
+					try{
+						WebSocketSession session = sessionMap.get(id).getSession();
+						String dvc = (String) session.getAttributes().get(IMConstants.device);
+						if (!id.equals(exceptSessionId) && (dvc==null || device==null || device.equals(dvc)))
+		            	{
+		            		map.remove(id);
+		            		session.close(); 
+							sessionMap.remove(id);
+						}
+				
+					}
+					catch(Exception e)
+					{
+						e.printStackTrace();
+					}
+				});
+				if(map.keySet().size()==0)
+				{
+					topicMap.remove(dest);
+					redisMq.unSub(dest);
+				}					
+			}
+		}
+	}
+
+	/**
+	 * 
+	 * @param accessor
+	 */
+	//更新session， 延长超时时间。
+	public synchronized void SessionHeartBeat(SimpMessageHeaderAccessor accessor)
+	{
+    	Map<String, Object> sessionAttributes = accessor.getSessionAttributes();
+    	if (sessionAttributes != null)
+    	{
+    		sessionAttributes.put(IMConstants.lastKickTime, System.currentTimeMillis());
+    	}
+	}
+	/**
+	 * 
+	 * @param dest
+	 * @param sessionId
+	 * @param subScribeId
+	 * @param channel
+	 * @return
+	 */
+	//注册主题ID
+	public synchronized int registerStompDest (String dest, String sessionId, String subScribeId, MessageChannel channel)
+	{
+		int ret=0;
+		ConcurrentHashMap<String,String> map = topicMap.get(dest);
+			if (map == null)
+			{
+				map = new ConcurrentHashMap<String, String>();
+				topicMap.put(dest, map);
+	    		redisMq.subscribe(dest);
+			}
+			
+			map.put(sessionId, "1");
+			SessionData data = sessionMap.get(sessionId);
+			data.getTopicsSubId().put(dest, subScribeId);
+			data.getSubIdTopics().put(subScribeId, dest);
+			if (data.getTopicsSubId().keySet().size()>channelMax)
+			{
+				WebSocketSession session = data.getSession();
+		        String userName = (String) session.getAttributes().get(IMConstants.loginName);
+				System.out.println("TOO MANY CHANNEL for single user "+ userName);				
+			}
+			data.getSubIdChannel().put(subScribeId, channel);
+		
+			ret = map.keySet().size();
+		return ret;
+	}
+	/**
+	 * 关闭session的时候清理资源用
+	 * @return
+	 */
+	public synchronized void cleanDest4Session(String sessionId)
+	{
+		while(true)
+		{
+			SessionData data = sessionMap.get(sessionId);
+			if(data == null)
+				break;
+			WebSocketSession session = data.getSession();
+			if (session == null)
+				break;
+	        String userName = (String) session.getAttributes().get(IMConstants.loginName);
+	        //如果sessionId订阅过/notify/username,说明成功登陆过， 否则没有
+	        if(data.getTopicsSubId().keySet().size()>0)
+	        	unifyMsgService.logoutPunch(userName);
+			break;
+	     }
+		//把无效的session清理掉
+		topicMap.keySet().forEach(k -> {
+		ConcurrentHashMap <String,String>  map = topicMap.get(k);
+		if (map.get(sessionId)!=null)
+		{
+			map.remove(sessionId);
+		}	
+				if (map.keySet().size()==0)
+				{
+					//unsubsribe redis channel
+					redisMq.unSub(k);
+					topicMap.remove(k);
+				}
+		});	
+	}
+	/**
+	 * 
+	 * @param dest    stomp destination
+	 * @param sessionId 
+	 * @return  返回还有没有用户订阅主题ID
+	 */
+	public synchronized boolean unRegisterStompDest( String sessionId,String subId)
+	{
+		boolean hasSubscriber=false;
+				//把无效的session清理掉
+				SessionData sessionData = sessionMap.get(sessionId);
+				//WebSocketSession session = sessionData.getSession();
+				//倒查subID对应的dest
+				
+				String dest = sessionData.getSubIdTopics().get(subId);
+				//unsubScribeStompChannel(sessionId,subId);//暂时不需要调用， 作为注释留在这里
+				if (dest!=null)
+				{
+					ConcurrentHashMap<String,String> map = topicMap.get(dest);
+					if (map !=null){
+						if (map.get(sessionId)!=null)
+						{
+							map.remove(sessionId);
+						}	
+						if (map.keySet().size()==0)
+						{
+							//unsubsribe redis channel
+							topicMap.remove(dest);
+							redisMq.unSub(dest);	
+						}else
+						{
+							hasSubscriber=true;
+						}
+					}
+					sessionData.getSubIdTopics().remove(subId);
+					sessionData.getTopicsSubId().remove(dest);
+				}
+		return !hasSubscriber;
+	}
+
+	/**
+	 * 对一组用户取消订阅主题
+	 * 
+	 */
+	public synchronized void unRegisterStompDest(String dest, List<String> userIds)
+	{
+		//把无效的session清理掉
+		ConcurrentHashMap<String, String> map = topicMap.get(dest);
+			Collections.sort(userIds);
+			if (map !=null && userIds.size()>0){
+				map.keySet().forEach(sessionId -> {
+					try{	
+						SessionData sessionData = sessionMap.get(sessionId);
+						WebSocketSession session = sessionData.getSession();
+			        	String userName = (String) session.getAttributes().get(IMConstants.loginName);
+			        	int i = Collections.binarySearch(userIds, userName);
+			        	if(i>=0)
+			        	{
+			        		String subId = sessionData.getTopicsSubId().get(dest);
+			        		if (subId !=null)
+			        		{
+				        		sessionData.getTopicsSubId().remove(dest);
+				        		sessionData.getSubIdChannel().remove(subId);
+				        		sessionData.getSubIdTopics().remove(subId);
+				        		map.remove(sessionId);
+				        		unsubScribeStompChannel(sessionId, subId);//里面可能导致topicMap的变化， 遍历无法继续,应该先行删除， 避免里面执行相关链表遍历。
+			        		}
+			        	}
+					}catch(Exception e)
+					{
+						e.printStackTrace();
+					}
+				});
+				if (map.keySet().size()==0)
+				{
+					//unsubsribe redis channel
+					topicMap.remove(dest);
+					redisMq.unSub(dest);				
+				}
+			}
+	}
+	/**
+	 * 服务器端unsub的做法， 查不到资料， 自己琢磨的， 不优雅，但能用。
+	 * @param sessionId
+	 * @param subId
+	 */
+	public synchronized void unsubScribeStompChannel(String sessionId, String subId)
+	{
+			SessionData sessionData = sessionMap.get(sessionId);
+			WebSocketSession session = sessionData.getSession();
+			String dest = sessionData.getSubIdTopics().get(subId);
+			if (dest != null)
+			{
+				sendErrorMsg(sessionId, IMConstants.errUnsubsribedByServer,dest);
+				StompHeaderAccessor headers = StompHeaderAccessor.create(StompCommand.UNSUBSCRIBE);
+				headers.setSessionId(sessionId);
+				headers.setSessionAttributes(session.getAttributes());
+				headers.setSubscriptionId(subId);
+				//headers.updateStompCommandAsClientMessage();
+				//headers.setDestination(dest);
+				Message<?> message = MessageBuilder.withPayload(new byte[0]).setHeaders(headers).build();
+				MessageChannel channel =  sessionData.getSubIdChannel().get(subId);
+				headers = StompHeaderAccessor.wrap(message);
+				Message message1 = MessageBuilder.createMessage(new byte[0], headers.getMessageHeaders());
+				try{
+					channel.send(message1);
+				}catch (NullPointerException e)
+				{
+					//正常错误， channel已经在spring内部被释放掉了。
+				}
+    		}
+	}
+	/**
+	 * 向云内广播消息
+	 * @param sessionId
+	 * @param errorCode
+	 * @param errorMsg
+	 */
+	public synchronized void sendErrorMsg(String sessionId, int errorCode, String errorMsg)
+	{
+		String notifyDest="";
+		SessionData sessionData = sessionMap.get(sessionId);
+		if (sessionData != null)
+		{
+			WebSocketSession session = sessionData.getSession();
+			if (session !=null)
+		    {
+				String userName = (String) session.getAttributes().get(IMConstants.loginName);
+			    notifyDest = IMConstants.destNotify+"/"+userName;
+				String errormsg = "\"{'errCode':"+errorCode +","+"'errMsg':'"+ errorMsg +"'}\"";
+				messagingTemplate.send(notifyDest, errormsg);
+		    }
+		}
+	}
+	/**
+	 * 只在本机器负责范围内通知指定session的在线用户错误通知, 
+	 * it's sad, 理想很丰满， 现实很骨感。 有bug。。。不能用,不过是个思路， 留下
+	 * @param sessionId
+	 * @param errorCode
+	 * @param errorMsg
+	 */
+	public synchronized void sendLocalErrorMsg(String sessionId, int errorCode, String errorMsg)
+	{
+			SessionData sessionData = sessionMap.get(sessionId);
+			if (sessionData!= null)
+			{
+				WebSocketSession session = sessionData.getSession();
+				if (session != null)
+		    	{
+					String userName = (String) session.getAttributes().get(IMConstants.loginName);
+			    	String notifyDest = IMConstants.destNotify+"/"+userName;
+			    	String subId = sessionData.getTopicsSubId().get(notifyDest);
+			    	if (subId != null)
+					{
+			    		StompHeaderAccessor headers = StompHeaderAccessor.create(StompCommand.MESSAGE);
+						headers.setSessionId(sessionId);
+						headers.setSessionAttributes(session.getAttributes());
+						headers.setSubscriptionId(subId);
+						//headers.updateStompCommandAsClientMessage();
+						headers.setDestination(notifyDest);
+						MessageChannel channel =  sessionData.getSubIdChannel().get(subId);
+						String errormsg = "\"{'errCode':"+errorCode +","+"'errMsg':'"+ errorMsg +"'}\"";
+						Message message1 = MessageBuilder.createMessage(errormsg.getBytes(), headers.getMessageHeaders());
+						try{
+							channel.send(message1);
+						}catch (NullPointerException e)
+						{
+							//正常错误， channel已经在spring内部被释放掉了。
+						}		
+					}
+		    	}
+			}
+	}	
+	
+	public void SendkickUsersCmdMsg(String userName, String device,String sessionId)
+	{
+		String cmd = "{'cmd':'kick',"+"'userName':'"+ userName +"','except':'"+sessionId+"','device':'"+device+"'}";
+		messagingTemplate.send(IMConstants.IMServersBroadCastMsg, cmd);		
+	}
+	
+	//检查是否已经订阅了主题ID
+	/**权限检查的三级缓存之本地缓存
+	 * 已经注册开通过的订阅就不需要再去redis和mongo检查。
+	 * @param dest
+	 * @param sessionId
+	 * @return  是否已经注册过
+	 */
+	public synchronized boolean checkRegisteredStompDest(String topic, String sessionId)
+	{
+		
+		boolean bRet = false;
+			SessionData data = sessionMap.get(sessionId);
+			if (data!=null && data.getTopicsSubId().get(topic)!=null)
+			{
+				bRet=true;
+			}
+		return bRet;
+	}
+}

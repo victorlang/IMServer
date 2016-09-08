@@ -1,0 +1,87 @@
+//created by zhang jian xin 2016 @IBM
+package com.ibm.cloud.im.config;
+
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.context.annotation.Scope;
+import redis.clients.jedis.Jedis;
+import redis.clients.jedis.JedisPool;
+import redis.clients.jedis.JedisPoolConfig;
+@Configuration
+public class RedisConfiguration {
+    @Value("${redis.host}")
+    public String host;
+    public String getHost() {
+		return host;
+	}
+
+	public void setHost(String host) {
+		this.host = host;
+	}
+	public boolean isRedisEnabled()
+	{
+		boolean ret=true;
+		if (host==null || host.trim().isEmpty())
+		{
+			ret=false;
+		}
+		return ret;
+	}
+
+	@Value("${redis.port}")
+    public int port;
+    
+    public int getPort() {
+		return port;
+	}
+
+	public void setPort(int port) {
+		this.port = port;
+	}
+
+	@Bean
+            JedisPoolConfig jedisPoolConfig() {
+    	if(isRedisEnabled() )
+    		return new JedisPoolConfig();
+    	else
+    		return null;
+    }
+
+    @Bean
+            JedisPool jedisPool() {
+    	if(isRedisEnabled() )
+    		return new JedisPool(jedisPoolConfig(), host, port, 0);
+    	else
+    		return null;
+    }
+
+    @Bean
+    @Scope("prototype")
+            Jedis jedis() {
+    	if(isRedisEnabled() )
+    	{
+    		Jedis jedis =  jedisPool().getResource();
+	    	return jedis;
+    	}else
+    	{
+    		return null;
+    	}
+
+    	//jedis.subscribe(pubsub, "NOBODY");
+    	/*RedisMessageHandler subscriber = redisMessageHandler();
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                	Jedis jedis = new Jedis(host, port);
+                	jedis.subscribe(subscriber, "XXXX", "YYYY");
+                } catch (Exception e) {
+                	System.out.println(e); 
+                	jedis.close();
+                }
+                jedis.close();
+            }
+        }).start();  */  	
+    }
+}
