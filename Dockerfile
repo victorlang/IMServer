@@ -9,7 +9,7 @@
 FROM java:8 
 # Install Java.
 
-COPY ./IMServer/target/IMServer.jar  /home/IMServer.jar
+COPY ./IMServer/target/IBM-IMServer-0.1.0.jar  /home/IMServer.jar
 
 # Define working directory.
 WORKDIR /data
