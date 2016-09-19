@@ -1,4 +1,4 @@
-//created by zhang jian xin 2016 @IBM
+//Main entry of IM server app
 package com.ibm.cloud.im;
 
 import org.springframework.boot.SpringApplication;
