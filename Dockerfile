@@ -12,6 +12,8 @@ FROM java:8
 
 COPY IMServer-0.1.0.jar  /home/IMServer.jar
 
+EXPOSE 9999:9999
+
 # Define working directory.
 WORKDIR /data
 
